@@ -12,7 +12,9 @@
       "Bash(git push:*)",
       "mcp__filesystem__directory_tree",
       "mcp__filesystem__read_text_file",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nv2.3: Browser cleanup fix & CLAUDE.md update\n\n- Fix stale WebSocket connection on retry \\(ECONNREFUSED\\)\n- Add explicit browser closing before retry in EnterpriseCLI.js\n- Update CLAUDE.md with new commands and patterns\n- Update settings.local.json\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git remote set-url:*)"
     ]
   }
 }
