@@ -14,23 +14,29 @@ set USE_MOCK_REPOSITORY=true && npm start
 
 # 실제 데이터 사용
 npm start                         # CLI 메인 메뉴
+npm run start:improved            # 개선된 CLI
 
 # 주요 워크플로우
 npm run pause                     # 구독 일시정지
 npm run resume                    # 구독 재개
-npm run resume:complete           # 완전 재개 (초대 링크 포함)
 npm run family:check              # 가족 요금제 확인
 npm run backup:txt                # 프로필 TXT 백업
+npm run backup-card:change        # 백업 카드 변경
 
-# 테스트
+# 테스트 및 검증
 npm test                          # AdsPower 연결 테스트
 npm run verify:dates              # 15개 언어 날짜 파싱 검증
-node test-connection.js           # 단일 연결 테스트
+node test-connection.js           # 단일 프로필 연결 테스트
 
 # 배치 작업
-npm run batch:pause               # 배치 일시정지
-npm run batch:resume              # 배치 재개
 npm run batch:visual              # 시각적 배치 컨트롤러
+npm run batch:improved:pause      # 개선된 배치 일시정지
+npm run batch:improved:resume     # 개선된 배치 재개
+
+# 로그 및 진단
+npm run logs:stats                # 로그 통계 확인
+npm run logs:cleanup              # 오래된 로그 정리
+npm run batch:diagnose            # 배치 작업 진단
 ```
 
 ## Critical Implementation Rules
@@ -70,6 +76,21 @@ container.register({
 
 ### 4. Repository 지연 초기화 패턴
 Repository는 `createLazyRepository()` 래퍼를 통해 첫 호출시 자동 초기화됨.
+
+### 5. 재시도 전 브라우저 정리 (v2.3)
+"이미 일시중지 상태" 재확인 시 Stale WebSocket 연결 방지:
+```javascript
+// ❌ 브라우저 종료 없이 재시도 - ECONNREFUSED 발생
+await new Promise(resolve => setTimeout(resolve, 3000));
+i--;
+continue;
+
+// ✅ 명시적 브라우저 종료 후 재시도
+await adsPowerAdapter.closeBrowser(task.adsPowerId);
+await new Promise(resolve => setTimeout(resolve, 5000));
+i--;
+continue;
+```
 
 ## Architecture
 
@@ -131,7 +152,8 @@ Repository는 `createLazyRepository()` 래퍼를 통해 첫 호출시 자동 초
 
 ```bash
 # 필수
-ADSPOWER_API_URL=http://local.adspower.net:50325
+ADSPOWER_API_URL=auto            # 자동 포트 감지 (50325, 50326, 50327)
+# 또는 ADSPOWER_API_URL=http://127.0.0.1:50326  # 수동 지정
 GOOGLE_SHEETS_ID=<sheets_id>
 GOOGLE_SERVICE_ACCOUNT_PATH=./credentials/service-account.json
 
@@ -141,7 +163,7 @@ USE_MOCK_REPOSITORY=true
 # 워크플로우 설정
 BATCH_SIZE=5                     # 동시 처리 프로필 수
 NAVIGATION_TIMEOUT=30000         # 30초
-LOGIN_MODE=improved              # improved/legacy/macro
+LOGIN_MODE=improved              # improved/legacy/minimal
 
 # 선택사항
 DEBUG_MODE=false
@@ -189,17 +211,20 @@ myUseCase: asClass(MyUseCase)
 tasklist | findstr "AdsPower"    # 실행 확인
 netstat -an | findstr "50325"    # API 포트 확인 (50325, 50326, 50327)
 set USE_MOCK_REPOSITORY=true     # Mock 모드 전환
+# ADSPOWER_API_URL=auto 설정 시 자동 포트 감지
 ```
 
-### 브라우저 세션 충돌
+### 브라우저 세션 충돌 / ECONNREFUSED 오류
 ```bash
 taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 taskkill /f /im "AdsPower.exe"   # AdsPower 재시작
 ```
+재시도 시 `closeBrowser()` 호출로 Stale WebSocket 연결 방지 (v2.3)
 
 ### Google Sheets 권한 오류
 1. `credentials/service-account.json` 존재 확인
 2. Service Account 이메일이 Sheets에 편집자로 추가되었는지 확인
+3. GOOGLE_SHEETS_ID가 하드코딩 대신 `process.env.GOOGLE_SHEETS_ID` 사용 확인
 
 ### 메모리 누수 방지
 - 브라우저 사용 후 반드시 `closeBrowser()` 호출

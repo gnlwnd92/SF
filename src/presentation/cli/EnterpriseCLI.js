@@ -2177,6 +2177,9 @@ class EnterpriseCLI {
         needRecheck: []  // v2.0: 결제 복구 후 재확인 필요한 계정
       };
 
+      // ★ v2.3: AdsPower 어댑터 가져오기 (브라우저 명시적 종료를 위해)
+      const adsPowerAdapter = this.container.resolve('adsPowerAdapter');
+
       // ★ v2.2: 인덱스 기반 루프로 변경 (즉시 재시도 지원)
       for (let i = 0; i < selectedTasks.length; i++) {
         const task = selectedTasks[i];
@@ -2243,8 +2246,17 @@ class EnterpriseCLI {
               console.log(chalk.yellow(`  ⚠️ "이미 일시중지 상태"로 감지됨 - 오판 가능성 검토`));
               console.log(chalk.cyan(`  🔄 즉시 재시도하여 상태 재확인합니다...`));
 
-              // 브라우저 정리 대기
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              // ★ v2.3: 브라우저 명시적 종료 (Stale WebSocket 연결 방지)
+              try {
+                console.log(chalk.gray(`  🔧 브라우저 세션 정리 중...`));
+                await adsPowerAdapter.closeBrowser(task.adsPowerId);
+                console.log(chalk.gray(`  ✅ 브라우저 세션 정리 완료`));
+              } catch (closeError) {
+                console.log(chalk.gray(`  ⚠️ 브라우저 종료 중 오류 (무시됨): ${closeError.message}`));
+              }
+
+              // 브라우저가 완전히 종료될 때까지 대기
+              await new Promise(resolve => setTimeout(resolve, 5000));
 
               // 즉시 재시도 플래그 설정 (무한루프 방지)
               task._alreadyPausedRetried = true;

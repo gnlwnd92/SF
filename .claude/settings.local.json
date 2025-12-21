@@ -4,7 +4,15 @@
       "Bash(gh auth:*)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: AdsPower YouTube Premium Automation\n\n- Clean Architecture 기반 브라우저 자동화 시스템\n- AdsPower API + Puppeteer로 YouTube Premium 구독 관리\n- Awilix DI 컨테이너, 15개 언어 지원\n- 자동 포트 감지 \\(50325, 50326, 50327\\)\n- Google Sheets 연동 \\(환경변수 기반\\)\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh repo create:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit --amend -m \"$\\(cat <<''EOF''\nInitial commit: AdsPower YouTube Premium Automation\n\n- Clean Architecture 기반 브라우저 자동화 시스템\n- AdsPower API + Puppeteer로 YouTube Premium 구독 관리\n- Awilix DI 컨테이너, 15개 언어 지원\n- 자동 포트 감지 \\(50325, 50326, 50327\\)\n- Google Sheets 연동 \\(환경변수 기반\\)\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "mcp__filesystem__directory_tree",
+      "mcp__filesystem__read_text_file",
+      "Bash(cat:*)"
     ]
   }
 }
