@@ -1,0 +1,21 @@
+{
+  "sheets": [
+    {
+      "id": "1kHXW5JRPNBzrgv1Nkx-UBEaNMBNTTmcTCq-hvJzIw3k",
+      "name": "메인 시트",
+      "path": "./credentials/service-account.json"
+    },
+    {
+      "id": "1qT_Eu8dZcFRWxCe2P6kcdq0Wf3c7ZZmZLh8m2tEAaiE",
+      "name": "2번시트",
+      "path": "./credentials/service-account.json"
+    },
+    {
+      "id": "1DVHF10AjHFumczHQg4cg5T0fYGKtjfOMYXO6FsU8lkg",
+      "name": "3번시트",
+      "path": "./credentials/service-account.json"
+    }
+  ],
+  "activeIndex": 0,
+  "lastModified": "2025-10-04T00:19:17.590Z"
+}

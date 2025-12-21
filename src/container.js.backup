@@ -1,0 +1,319 @@
+/**
+ * 의존성 주입 컨테이너
+ * 모든 컴포넌트의 생성과 연결을 관리
+ */
+
+const { createContainer, asClass, asValue, asFunction } = require('awilix');
+const path = require('path');
+
+// 도메인 엔티티
+const Profile = require('./domain/entities/Profile');
+const Subscription = require('./domain/entities/Subscription');
+const WorkflowResult = require('./domain/entities/WorkflowResult');
+
+// 도메인 서비스
+const YouTubePremiumService = require('./domain/services/YouTubePremiumService');
+
+// 인프라 어댑터
+const AdsPowerAdapter = require('./infrastructure/adapters/AdsPowerAdapter');
+const YouTubeAutomationAdapter = require('./infrastructure/adapters/YouTubeAutomationAdapter');
+const BrowserController = require('./infrastructure/adapters/BrowserController');
+
+// 레포지토리
+const GoogleSheetsProfileRepository = require('./infrastructure/repositories/GoogleSheetsProfileRepository');
+const EnhancedGoogleSheetsRepository = require('./infrastructure/repositories/EnhancedGoogleSheetsRepository');
+
+// 로깅 시스템
+const { LoggerAdapter } = require('./infrastructure/logging/LoggerAdapter');
+
+// 애플리케이션 유스케이스
+const EnhancedPauseSubscriptionUseCase = require('./application/usecases/EnhancedPauseSubscriptionUseCase');
+const EnhancedResumeSubscriptionUseCase = require('./application/usecases/EnhancedResumeSubscriptionUseCase');
+const BatchPauseOptimizedUseCase = require('./application/usecases/BatchPauseOptimizedUseCase');
+const BatchResumeOptimizedUseCase = require('./application/usecases/BatchResumeOptimizedUseCase');
+const DeleteProfileUseCase = require('./application/usecases/DeleteProfileUseCase');
+const OptimizedDeleteProfileUseCase = require('./application/usecases/OptimizedDeleteProfileUseCase');
+
+// 개선된 유스케이스 (GOOGLE_LOGIN_SOLUTION_REPORT 기반)
+const ImprovedPauseSubscriptionUseCase = require('./application/usecases/ImprovedPauseSubscriptionUseCase');
+const ImprovedResumeSubscriptionUseCase = require('./application/usecases/ImprovedResumeSubscriptionUseCase');
+
+// 백업/복원 유스케이스
+const TxtBackupUseCase = require('./application/usecases/TxtBackupUseCase');
+const TxtBackupUseCaseEnhanced = require('./application/usecases/TxtBackupUseCaseEnhanced');
+const TxtBackupUseCaseAdvanced = require('./application/usecases/TxtBackupUseCaseAdvanced');
+const TxtRestoreUseCase = require('./application/usecases/TxtRestoreUseCase');
+const TxtBackupUseCaseFinal = require('./application/usecases/TxtBackupUseCaseFinal');
+
+// 레포지토리 - PauseSheet, ResumeSheet, DeleteSheet 추가
+const PauseSheetRepository = require('./infrastructure/repositories/PauseSheetRepository');
+const ResumeSheetRepository = require('./infrastructure/repositories/ResumeSheetRepository');
+const DeleteSheetRepository = require('./infrastructure/repositories/DeleteSheetRepository');
+
+/**
+ * 컨테이너 생성 및 설정
+ */
+function setupContainer(config = {}) {
+  const container = createContainer();
+
+  // 설정 등록
+  container.register({
+    config: asValue({
+      adsPowerApiUrl: config.adsPowerApiUrl || process.env.ADSPOWER_API_URL || 'http://local.adspower.net:50325',
+      googleSheetsId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+      serviceAccountPath: config.serviceAccountPath || path.join(__dirname, '..', 'credentials', 'service-account.json'),
+      debugMode: config.debugMode || false,
+      stealthMode: config.stealthMode !== false,
+      ...config
+    }),
+
+    // 로거 (새로운 LoggerAdapter 시스템)
+    logger: asFunction(() => {
+      return new LoggerAdapter({
+        baseDir: config.logDir || path.join(path.join(__dirname, '..'), 'logs'),
+        enableConsole: config.enableConsoleLog !== false,
+        enableFile: config.enableFileLog !== false,
+        level: config.logLevel || 'INFO'
+      });
+    }).singleton(),
+
+    // 인프라 어댑터
+    adsPowerAdapter: asClass(AdsPowerAdapter)
+      .singleton()
+      .inject(() => ({
+        apiUrl: config.adsPowerApiUrl || process.env.ADSPOWER_API_URL || 'http://local.adspower.net:50325',
+        debugMode: config.debugMode || false,
+        stealthMode: config.stealthMode !== false,
+        timeout: 30000,
+        retryAttempts: 3,
+        retryDelay: 2000
+      })),
+
+    youtubeAdapter: asClass(YouTubeAutomationAdapter)
+      .singleton()
+      .inject(() => ({
+        debugMode: config.debugMode || false,
+        premiumUrl: 'https://www.youtube.com/paid_memberships',
+        forceLanguage: config.forceLanguage || null,
+        screenshotEnabled: config.screenshotEnabled !== false
+      })),
+
+    // 레포지토리
+    profileRepository: asClass(GoogleSheetsProfileRepository)
+      .singleton()
+      .inject(() => ({
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+        serviceAccountPath: config.serviceAccountPath || path.join(__dirname, '..', 'credentials', 'service-account.json'),
+        sheetName: '애즈파워현황'
+      })),
+
+    // Enhanced Google Sheets 레포지토리
+    enhancedSheetsRepository: asFunction(() => {
+      return new EnhancedGoogleSheetsRepository({
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+        serviceAccountPath: config.serviceAccountPath
+      });
+    }).singleton(),
+
+    // 워크플로우 레포지토리 (임시 - 메모리)
+    workflowRepository: asValue({
+      workflows: new Map(),
+      async save(workflow) {
+        this.workflows.set(workflow.id, workflow);
+        return workflow;
+      },
+      async findById(id) {
+        return this.workflows.get(id) || null;
+      },
+      async findByProfileId(profileId) {
+        const results = [];
+        for (const [id, workflow] of this.workflows) {
+          if (workflow.profileId === profileId) {
+            results.push(workflow);
+          }
+        }
+        return results;
+      }
+    }),
+
+    // 도메인 서비스
+    youtubePremiumService: asClass(YouTubePremiumService)
+      .inject(() => ({
+        repositories: {
+          subscriptionRepository: container.resolve('subscriptionRepository'),
+          workflowRepository: container.resolve('workflowRepository')
+        }
+      })),
+
+    // 구독 레포지토리 (임시 - 메모리)
+    subscriptionRepository: asValue({
+      subscriptions: new Map(),
+      async save(subscription) {
+        this.subscriptions.set(subscription.id, subscription);
+        return subscription;
+      },
+      async findById(id) {
+        return this.subscriptions.get(id) || null;
+      },
+      async findByProfileId(profileId) {
+        for (const [id, subscription] of this.subscriptions) {
+          if (subscription.profileId === profileId) {
+            return subscription;
+          }
+        }
+        return null;
+      }
+    }),
+
+    // PauseSheet 레포지토리 추가
+    pauseSheetRepository: asClass(PauseSheetRepository)
+      .singleton()
+      .inject(() => ({
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID
+      })),
+
+    // ResumeSheet 레포지토리 추가
+    resumeSheetRepository: asClass(ResumeSheetRepository)
+      .singleton()
+      .inject(() => ({
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+        serviceAccountPath: config.serviceAccountPath || path.join(__dirname, '..', 'credentials', 'service-account.json')
+      })),
+
+    // DeleteSheet 레포지토리 추가
+    deleteSheetRepository: asClass(DeleteSheetRepository)
+      .singleton()
+      .inject(() => ({
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+        serviceAccountPath: config.serviceAccountPath || path.join(__dirname, '..', 'credentials', 'service-account.json'),
+        logger: container.resolve('logger')
+      })),
+
+    // 애플리케이션 유스케이스
+
+    // Enhanced 일시중지 유스케이스 (새로운 버전)
+    enhancedPauseSubscriptionUseCase: asClass(EnhancedPauseSubscriptionUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        youtubeAdapter: container.resolve('youtubeAdapter'),
+        profileRepository: container.resolve('profileRepository'),
+        pauseSheetRepository: container.resolve('pauseSheetRepository'),
+        logger: container.resolve('logger'),
+        config: container.resolve('config')
+      })),
+
+    // Enhanced 재개 유스케이스 (새로운 버전)
+    enhancedResumeSubscriptionUseCase: asClass(EnhancedResumeSubscriptionUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        youtubeAdapter: container.resolve('youtubeAdapter'),
+        profileRepository: container.resolve('profileRepository'),
+        pauseSheetRepository: container.resolve('pauseSheetRepository'),
+        logger: container.resolve('logger'),
+        config: container.resolve('config')
+      })),
+
+    // 배치 일시중지 최적화 유스케이스
+    batchPauseOptimizedUseCase: asClass(BatchPauseOptimizedUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        pauseUseCase: container.resolve('enhancedPauseSubscriptionUseCase'),
+        sheetsRepository: container.resolve('enhancedSheetsRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 배치 재개 최적화 유스케이스
+    batchResumeOptimizedUseCase: asClass(BatchResumeOptimizedUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        resumeUseCase: container.resolve('enhancedResumeSubscriptionUseCase'),
+        sheetsRepository: container.resolve('enhancedSheetsRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 개선된 일시중지 유스케이스 (GOOGLE_LOGIN_SOLUTION_REPORT 기반)
+    improvedPauseSubscriptionUseCase: asClass(ImprovedPauseSubscriptionUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        youtubeAdapter: container.resolve('youtubeAdapter'),
+        profileRepository: container.resolve('profileRepository'),
+        pauseSheetRepository: container.resolve('pauseSheetRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 개선된 재개 유스케이스 (GOOGLE_LOGIN_SOLUTION_REPORT 기반)
+    improvedResumeSubscriptionUseCase: asClass(ImprovedResumeSubscriptionUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        youtubeAdapter: container.resolve('youtubeAdapter'),
+        profileRepository: container.resolve('profileRepository'),
+        pauseSheetRepository: container.resolve('pauseSheetRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 백업/복원 유스케이스
+    txtBackupUseCase: asClass(TxtBackupUseCase)
+      .inject(() => ({
+        googleSheetsRepository: container.resolve('profileRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 향상된 백업 유스케이스 (중복 ID 처리 포함)
+    txtBackupUseCaseEnhanced: asClass(TxtBackupUseCaseEnhanced)
+      .inject(() => ({
+        googleSheetsRepository: container.resolve('profileRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 고급 백업 유스케이스 (날짜 우선순위 & 정렬)
+    txtBackupUseCaseAdvanced: asClass(TxtBackupUseCaseAdvanced)
+      .inject(() => ({
+        googleSheetsRepository: container.resolve('profileRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 최종 백업 유스케이스 (Sheets 내 중복 처리)
+    txtBackupUseCaseFinal: asClass(TxtBackupUseCaseFinal)
+      .inject(() => ({
+        googleSheetsRepository: container.resolve('profileRepository'),
+        logger: container.resolve('logger')
+      })),
+    txtRestoreUseCase: asClass(TxtRestoreUseCase)
+      .inject(() => ({
+        googleSheetsRepository: container.resolve('profileRepository'),
+        logger: container.resolve('logger')
+      })),
+
+    // 프로필 삭제 유스케이스 (기존 - 호환성용)
+    deleteProfileUseCaseLegacy: asClass(DeleteProfileUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        deleteSheetRepository: container.resolve('deleteSheetRepository'),
+        logger: container.resolve('logger'),
+        config: container.resolve('config')
+      })),
+    
+    // 최적화된 프로필 삭제 유스케이스 (기본)
+    deleteProfileUseCase: asClass(OptimizedDeleteProfileUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        deleteSheetRepository: container.resolve('deleteSheetRepository'),
+        logger: container.resolve('logger')
+      })),
+
+  });
+
+  return container;
+}
+
+/**
+ * 컨테이너 팩토리
+ */
+function createApplicationContainer(config = {}) {
+  return setupContainer(config);
+}
+
+module.exports = {
+  setupContainer,
+  createApplicationContainer
+};

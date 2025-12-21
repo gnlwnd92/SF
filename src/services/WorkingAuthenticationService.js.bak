@@ -1,0 +1,468 @@
+/**
+ * Working Authentication Service
+ * 실제로 작동하는 Google 로그인 서비스
+ * - 계정 선택 페이지 클릭 문제를 URL 조작으로 우회
+ */
+
+const chalk = require('chalk');
+
+class WorkingAuthenticationService {
+  constructor(options = {}) {
+    this.debugMode = options.debugMode || false;
+  }
+
+  log(message, type = 'info') {
+    if (!this.debugMode) return;
+    
+    const prefix = '[WorkingAuth]';
+    const formattedMessage = `${prefix} ${message}`;
+    
+    switch(type) {
+      case 'success':
+        console.log(chalk.green(formattedMessage));
+        break;
+      case 'error':
+        console.log(chalk.red(formattedMessage));
+        break;
+      case 'warning':
+        console.log(chalk.yellow(formattedMessage));
+        break;
+      default:
+        console.log(chalk.cyan(formattedMessage));
+    }
+  }
+
+  /**
+   * 로그인 상태 확인
+   */
+  async checkLoginStatus(page) {
+    try {
+      const currentUrl = page.url();
+      
+      // 로그인 페이지인지 확인
+      if (currentUrl.includes('accounts.google.com')) {
+        this.log('로그인이 필요한 상태', 'warning');
+        return false;
+      }
+      
+      // YouTube에서 로그인 확인
+      if (currentUrl.includes('youtube.com')) {
+        const isLoggedIn = await page.evaluate(() => {
+          // 아바타 버튼 확인
+          const avatarBtn = document.querySelector('#avatar-btn, button#avatar-btn');
+          if (avatarBtn) return true;
+          
+          // 로그인 링크가 없는지 확인
+          const signInLink = document.querySelector('a[href*="ServiceLogin"]');
+          if (!signInLink) return true;
+          
+          // 페이지 텍스트 확인
+          const pageText = document.body?.innerText || '';
+          const hasManageButton = pageText.includes('Manage membership') || 
+                                 pageText.includes('구독 관리') ||
+                                 pageText.includes('관리');
+          if (hasManageButton) return true;
+          
+          return false;
+        });
+        
+        if (isLoggedIn) {
+          this.log('로그인 상태 확인됨', 'success');
+        } else {
+          this.log('로그인되지 않음', 'warning');
+        }
+        
+        return isLoggedIn;
+      }
+      
+      return true;
+    } catch (error) {
+      this.log(`로그인 상태 확인 실패: ${error.message}`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * 계정 선택 페이지 처리 (URL 조작 방식)
+   */
+  async handleAccountChooser(page, email) {
+    try {
+      this.log('계정 선택 페이지 처리 시작', 'info');
+      
+      const currentUrl = page.url();
+      const url = new URL(currentUrl);
+      const params = new URLSearchParams(url.search);
+      
+      // 세션 정보 추출
+      const sessionInfo = await page.evaluate((targetEmail) => {
+        const accounts = [];
+        document.querySelectorAll('[data-identifier]').forEach(el => {
+          const email = el.getAttribute('data-identifier');
+          const parent = el.closest('li');
+          if (parent) {
+            accounts.push({
+              email,
+              text: parent.innerText
+            });
+          }
+        });
+        
+        return {
+          accounts,
+          hasTargetAccount: accounts.some(acc => acc.email === targetEmail)
+        };
+      }, email);
+      
+      this.log(`발견된 계정: ${sessionInfo.accounts.length}개`, 'info');
+      sessionInfo.accounts.forEach(acc => {
+        this.log(`  - ${acc.email}`, 'info');
+      });
+      
+      if (sessionInfo.hasTargetAccount) {
+        this.log(`${email} 계정 발견 - 다양한 방법으로 진행 시도`, 'success');
+        
+        // 방법 1: "다른 계정 사용" 버튼 클릭
+        try {
+          this.log('방법 1: "다른 계정 사용" 버튼 클릭 시도', 'info');
+          
+          // "다른 계정 사용" 버튼 찾기 (여러 셀렉터 시도)
+          const useAnotherSelectors = [
+            'div[data-identifier=""]',  // 빈 identifier를 가진 div
+            '[aria-label*="다른 계정"]',
+            '[aria-label*="Use another account"]',
+            'li:has-text("다른 계정 사용")',
+            'li:has-text("Use another account")',
+            'div:has-text("다른 계정 사용")',
+            '[role="link"]:has-text("다른")',
+            'li[class*="JDAKTe"] div[data-identifier=""]'  // Google의 클래스명 패턴
+          ];
+          
+          let useAnotherButton = null;
+          for (const selector of useAnotherSelectors) {
+            try {
+              useAnotherButton = await page.$(selector);
+              if (useAnotherButton) {
+                this.log(`"다른 계정 사용" 버튼 찾음: ${selector}`, 'success');
+                break;
+              }
+            } catch (e) {
+              // 셀렉터 오류 무시
+            }
+          }
+          
+          if (useAnotherButton) {
+            await useAnotherButton.click();
+            await page.waitForTimeout(2000);
+            
+            // 이메일 필드 확인
+            const hasEmailField = await page.$('input[type="email"], input#identifierId');
+            if (hasEmailField) {
+              this.log('이메일 입력 페이지로 이동 성공 (방법 1)', 'success');
+              await this.inputEmail(page, email);
+              
+              // 비밀번호 페이지 대기
+              await page.waitForSelector('input[type="password"]', { 
+                visible: true, 
+                timeout: 10000 
+              }).catch(() => null);
+              
+              return true;
+            }
+          }
+        } catch (error) {
+          this.log(`방법 1 실패: ${error.message}`, 'warning');
+        }
+        
+        // 방법 2: URL 조작
+        try {
+          this.log('방법 2: URL 조작으로 이메일 입력 페이지 이동 시도', 'info');
+          
+          const identifierUrl = new URL('https://accounts.google.com/signin/v2/identifier');
+          identifierUrl.searchParams.set('continue', params.get('continue') || '');
+          identifierUrl.searchParams.set('service', params.get('service') || 'youtube');
+          identifierUrl.searchParams.set('hl', params.get('hl') || 'ko');
+          identifierUrl.searchParams.set('flowName', params.get('flowName') || 'GlifWebSignIn');
+          identifierUrl.searchParams.set('flowEntry', 'ServiceLogin');
+          
+          await page.goto(identifierUrl.toString(), {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+          });
+          
+          await page.waitForTimeout(2000);
+          
+          // 페이지가 실제로 이동했는지 확인
+          const newUrl = page.url();
+          if (!newUrl.includes('accountchooser')) {
+            const hasEmailField = await page.$('input[type="email"], input#identifierId');
+            if (hasEmailField) {
+              this.log('이메일 입력 페이지로 이동 성공 (방법 2)', 'success');
+              await this.inputEmail(page, email);
+              
+              await page.waitForSelector('input[type="password"]', { 
+                visible: true, 
+                timeout: 10000 
+              }).catch(() => null);
+              
+              return true;
+            }
+          } else {
+            this.log('URL 조작 후에도 계정 선택 페이지에 머물러 있음', 'warning');
+          }
+        } catch (error) {
+          this.log(`방법 2 실패: ${error.message}`, 'warning');
+        }
+        
+        // 방법 3: 계정 직접 클릭 (CDP 사용)
+        try {
+          this.log('방법 3: 계정 직접 클릭 시도', 'info');
+          
+          // 계정 요소 찾기
+          const accountElement = await page.$(`[data-identifier="${email}"]`);
+          if (accountElement) {
+            // 요소의 위치 가져오기
+            const box = await accountElement.boundingBox();
+            if (box) {
+              // 클릭 위치 계산 (중앙)
+              const x = box.x + box.width / 2;
+              const y = box.y + box.height / 2;
+              
+              this.log(`계정 클릭 위치: (${x}, ${y})`, 'info');
+              
+              // 마우스 이동 후 클릭
+              await page.mouse.move(x, y);
+              await page.waitForTimeout(500);
+              await page.mouse.click(x, y);
+              
+              await page.waitForTimeout(3000);
+              
+              // 비밀번호 필드 확인
+              const hasPasswordField = await page.$('input[type="password"]');
+              if (hasPasswordField) {
+                this.log('비밀번호 페이지로 이동 성공 (방법 3)', 'success');
+                return true;
+              }
+            }
+          }
+        } catch (error) {
+          this.log(`방법 3 실패: ${error.message}`, 'warning');
+        }
+        
+        // 모든 방법이 실패한 경우
+        this.log('모든 계정 선택 우회 방법 실패', 'error');
+        return false;
+      } else {
+        this.log(`${email} 계정이 목록에 없음 - "다른 계정 사용" 클릭`, 'warning');
+        
+        // "다른 계정 사용" 버튼 클릭
+        try {
+          const useAnotherButton = await page.$('div[data-identifier=""]') || 
+                                   await page.$('[aria-label*="다른 계정"]') ||
+                                   await page.$('[aria-label*="Use another account"]');
+          
+          if (useAnotherButton) {
+            await useAnotherButton.click();
+            await page.waitForTimeout(2000);
+            
+            const hasEmailField = await page.$('input[type="email"], input#identifierId');
+            if (hasEmailField) {
+              this.log('이메일 입력 페이지로 이동 성공', 'success');
+              await this.inputEmail(page, email);
+              return true;
+            }
+          }
+        } catch (error) {
+          this.log(`"다른 계정 사용" 버튼 클릭 실패: ${error.message}`, 'warning');
+        }
+        
+        // 대체 방법: URL 조작
+        this.log('URL 조작으로 재시도', 'info');
+        const identifierUrl = new URL('https://accounts.google.com/signin/v2/identifier');
+        identifierUrl.searchParams.set('continue', params.get('continue') || '');
+        identifierUrl.searchParams.set('service', params.get('service') || 'youtube');
+        identifierUrl.searchParams.set('hl', params.get('hl') || 'ko');
+        identifierUrl.searchParams.set('flowName', 'GlifWebSignIn');
+        identifierUrl.searchParams.set('flowEntry', 'ServiceLogin');
+        
+        await page.goto(identifierUrl.toString(), {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        
+        await page.waitForTimeout(2000);
+        
+        // 이메일 입력
+        await this.inputEmail(page, email);
+        return true;
+      }
+      
+    } catch (error) {
+      this.log(`계정 선택 페이지 처리 실패: ${error.message}`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * 이메일 입력
+   */
+  async inputEmail(page, email) {
+    try {
+      this.log('이메일 입력 시작', 'info');
+      
+      const emailInput = await page.$('input[type="email"], input#identifierId');
+      if (emailInput) {
+        await emailInput.click({ clickCount: 3 });
+        await emailInput.type(email, { delay: 100 });
+        this.log(`이메일 입력: ${email}`, 'success');
+        
+        // 다음 버튼 클릭 또는 Enter
+        const nextButton = await page.$('#identifierNext');
+        if (nextButton) {
+          await nextButton.click();
+        } else {
+          await page.keyboard.press('Enter');
+        }
+        
+        this.log('다음 단계로 진행', 'success');
+        await page.waitForTimeout(3000);
+        return true;
+      }
+      
+      return false;
+      
+    } catch (error) {
+      this.log(`이메일 입력 실패: ${error.message}`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * 비밀번호 입력
+   */
+  async inputPassword(page, password) {
+    try {
+      this.log('비밀번호 입력 시작', 'info');
+      
+      // 비밀번호 필드 대기
+      await page.waitForSelector('input[type="password"]', { 
+        visible: true, 
+        timeout: 10000 
+      }).catch(() => null);
+      
+      const passwordInput = await page.$('input[type="password"]');
+      if (passwordInput) {
+        await passwordInput.click({ clickCount: 3 });
+        await passwordInput.type(password, { delay: 100 });
+        this.log('비밀번호 입력 완료', 'success');
+        
+        // 다음 버튼 클릭 또는 Enter
+        const nextButton = await page.$('#passwordNext');
+        if (nextButton) {
+          await nextButton.click();
+        } else {
+          await page.keyboard.press('Enter');
+        }
+        
+        this.log('로그인 진행 중...', 'info');
+        await page.waitForTimeout(3000);
+        return true;
+      }
+      
+      return false;
+      
+    } catch (error) {
+      this.log(`비밀번호 입력 실패: ${error.message}`, 'error');
+      return false;
+    }
+  }
+
+  /**
+   * 통합 로그인 프로세스
+   */
+  async performLogin(page, credentials) {
+    try {
+      this.log('🔐 로그인 프로세스 시작', 'info');
+      
+      // 자동화 감지 우회 설정
+      await page.setBypassCSP(true);
+      await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined
+        });
+      });
+      
+      const currentUrl = page.url();
+      
+      // 1. 계정 선택 페이지 처리
+      if (currentUrl.includes('accountchooser')) {
+        const handled = await this.handleAccountChooser(page, credentials.email);
+        if (!handled) {
+          return { success: false, reason: 'Failed to handle account chooser' };
+        }
+      } else if (currentUrl.includes('accounts.google.com')) {
+        // 2. 이미 로그인 페이지인 경우
+        const hasEmailField = await page.$('input[type="email"], input#identifierId');
+        if (hasEmailField) {
+          await this.inputEmail(page, credentials.email);
+        }
+      }
+      
+      // 3. 비밀번호 입력
+      const hasPasswordField = await page.$('input[type="password"]');
+      if (hasPasswordField && credentials.password) {
+        await this.inputPassword(page, credentials.password);
+      }
+      
+      // 4. 로그인 완료 대기
+      await page.waitForTimeout(5000);
+      
+      // 5. 최종 상태 확인
+      const finalUrl = page.url();
+      if (finalUrl.includes('youtube.com') && !finalUrl.includes('accounts.google.com')) {
+        this.log('✅ 로그인 성공!', 'success');
+        
+        // YouTube Premium 페이지로 이동 (필요한 경우)
+        if (!finalUrl.includes('paid_memberships')) {
+          await page.goto('https://www.youtube.com/paid_memberships', {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+          });
+        }
+        
+        return { success: true };
+      }
+      
+      // 6. 패스키 건너뛰기 처리
+      if (finalUrl.includes('passkeys') || finalUrl.includes('passwordless')) {
+        this.log('패스키 등록 건너뛰기', 'warning');
+        const skipButton = await page.$('button:has-text("나중에"), button:has-text("Skip"), button:has-text("Not now")');
+        if (skipButton) {
+          await skipButton.click();
+          await page.waitForTimeout(3000);
+          return { success: true };
+        }
+      }
+      
+      // 7. 2단계 인증 확인
+      const has2FA = await page.evaluate(() => {
+        const text = document.body?.innerText || '';
+        return text.includes('2-Step Verification') || 
+               text.includes('2단계 인증') ||
+               text.includes('확인 코드');
+      });
+      
+      if (has2FA) {
+        this.log('2단계 인증이 필요합니다', 'warning');
+        return { success: false, reason: '2FA required' };
+      }
+      
+      return { success: false, reason: 'Login incomplete' };
+      
+    } catch (error) {
+      this.log(`❌ 로그인 실패: ${error.message}`, 'error');
+      return { success: false, reason: error.message };
+    }
+  }
+}
+
+module.exports = WorkingAuthenticationService;

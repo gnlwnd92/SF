@@ -1,0 +1,654 @@
+/**
+ * 터미널 로그 관리 시스템
+ * - 모든 console 출력을 JSON 파일로 저장
+ * - 48시간 경과한 로그 파일 자동 삭제
+ */
+
+const fs = require('fs').promises;
+const fsSync = require('fs');
+const path = require('path');
+const chalk = require('chalk');
+const util = require('util');
+
+class TerminalLogger {
+  constructor(config = {}) {
+    this.config = {
+      logDir: config.logDir || path.join(process.cwd(), 'logs', 'terminal'),
+      maxAge: config.maxAge || 48 * 60 * 60 * 1000, // 48시간 (밀리초)
+      checkInterval: config.checkInterval || 60 * 60 * 1000, // 1시간마다 체크
+      enabled: config.enabled !== false,
+      ...config
+    };
+    
+    this.logBuffer = [];
+    this.currentLogFile = null;
+    this.originalConsole = {};
+    this.cleanupInterval = null;
+    
+    if (this.config.enabled) {
+      this.initialize();
+    }
+  }
+
+  /**
+   * 초기화
+   */
+  async initialize() {
+    try {
+      // 로그 디렉토리 생성
+      await this.ensureLogDirectory();
+      
+      // 현재 세션의 로그 파일 생성
+      this.currentLogFile = await this.createLogFile();
+      
+      // console 메서드 오버라이드
+      this.overrideConsole();
+      
+      // 정기적인 클린업 시작
+      this.startCleanupSchedule();
+      
+      // 초기 로그 기록
+      await this.writeLog({
+        type: 'SYSTEM',
+        level: 'info',
+        message: '터미널 로깅 시스템 시작',
+        timestamp: new Date().toISOString(),
+        sessionId: this.getSessionId()
+      });
+      
+      const logFileName = path.basename(this.currentLogFile);
+      const logFilePath = path.relative(process.cwd(), this.currentLogFile);
+      
+      console.log(chalk.green('✅ 터미널 로깅 시스템 활성화'));
+      console.log(chalk.cyan('📝 현재 세션 로그:'));
+      console.log(chalk.white.bold(`   ${logFileName}`));
+      console.log(chalk.gray(`   경로: ${logFilePath}`));
+      console.log(chalk.gray(`   디렉토리: ${this.config.logDir}`));
+      
+    } catch (error) {
+      console.error('터미널 로거 초기화 실패:', error);
+    }
+  }
+
+  /**
+   * 로그 디렉토리 확인 및 생성
+   */
+  async ensureLogDirectory() {
+    try {
+      await fs.access(this.config.logDir);
+    } catch {
+      await fs.mkdir(this.config.logDir, { recursive: true });
+    }
+  }
+
+  /**
+   * 로그 파일 생성
+   */
+  async createLogFile() {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const sessionId = this.getSessionId();
+    const filename = `terminal-log-${timestamp}-${sessionId}.json`;
+    const filepath = path.join(this.config.logDir, filename);
+    
+    // 초기 메타데이터 작성
+    const metadata = {
+      version: '1.0.0',
+      sessionId: sessionId,
+      startTime: new Date().toISOString(),
+      pid: process.pid,
+      platform: process.platform,
+      nodeVersion: process.version,
+      cwd: process.cwd(),
+      env: {
+        USE_MOCK_REPOSITORY: process.env.USE_MOCK_REPOSITORY,
+        DEBUG_MODE: process.env.DEBUG_MODE,
+        NODE_ENV: process.env.NODE_ENV
+      },
+      logs: []
+    };
+    
+    await fs.writeFile(filepath, JSON.stringify(metadata, null, 2));
+    return filepath;
+  }
+
+  /**
+   * 세션 ID 생성
+   */
+  getSessionId() {
+    return Math.random().toString(36).substring(2, 15);
+  }
+
+  /**
+   * Console 메서드 오버라이드
+   */
+  overrideConsole() {
+    const methods = ['log', 'info', 'warn', 'error', 'debug'];
+    
+    methods.forEach(method => {
+      // 원본 메서드 저장
+      this.originalConsole[method] = console[method];
+      
+      // 새로운 메서드로 교체
+      console[method] = (...args) => {
+        // 원본 console 출력
+        this.originalConsole[method](...args);
+        
+        // 로그 저장
+        this.captureLog(method, args);
+      };
+    });
+  }
+
+  /**
+   * 로그 캡처 및 저장
+   */
+  async captureLog(level, args) {
+    try {
+      // 로그 메시지 포맷팅
+      const message = args.map(arg => {
+        if (typeof arg === 'object') {
+          return util.inspect(arg, { depth: 3, colors: false });
+        }
+        // chalk 색상 코드 제거
+        return String(arg).replace(/\x1b\[[0-9;]*m/g, '');
+      }).join(' ');
+      
+      // 로그 엔트리 생성
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        level: level,
+        message: message,
+        raw: args.map(arg => {
+          if (typeof arg === 'object') {
+            try {
+              return JSON.parse(JSON.stringify(arg));
+            } catch {
+              return String(arg);
+            }
+          }
+          return arg;
+        }),
+        stack: this.getCallStack()
+      };
+      
+      // 버퍼에 추가
+      this.logBuffer.push(logEntry);
+      
+      // 버퍼가 일정 크기 이상이면 파일에 기록
+      if (this.logBuffer.length >= 10) {
+        await this.flushBuffer();
+      }
+      
+    } catch (error) {
+      // 로깅 실패는 조용히 처리
+      this.originalConsole.error('로그 캡처 실패:', error);
+    }
+  }
+
+  /**
+   * 호출 스택 정보 추출
+   */
+  getCallStack() {
+    const stack = new Error().stack;
+    const lines = stack.split('\n').slice(4, 6); // 관련 있는 부분만 추출
+    return lines.map(line => line.trim()).filter(line => 
+      !line.includes('TerminalLogger') && 
+      !line.includes('node_modules')
+    );
+  }
+
+  /**
+   * 버퍼 플러시
+   */
+  async flushBuffer() {
+    if (this.logBuffer.length === 0 || !this.currentLogFile) return;
+    
+    try {
+      // 현재 파일 내용 읽기
+      const content = await fs.readFile(this.currentLogFile, 'utf-8');
+      const data = JSON.parse(content);
+      
+      // 로그 추가
+      data.logs.push(...this.logBuffer);
+      data.lastUpdate = new Date().toISOString();
+      
+      // 파일에 쓰기
+      await fs.writeFile(this.currentLogFile, JSON.stringify(data, null, 2));
+      
+      // 버퍼 초기화
+      this.logBuffer = [];
+      
+    } catch (error) {
+      this.originalConsole.error('로그 플러시 실패:', error);
+    }
+  }
+
+  /**
+   * 동기적 버퍼 플러시 (강제 종료 시 사용)
+   */
+  flushBufferSync() {
+    if (this.logBuffer.length === 0 || !this.currentLogFile) return;
+    
+    try {
+      // 현재 파일 내용 읽기 (동기)
+      const content = fsSync.readFileSync(this.currentLogFile, 'utf-8');
+      const data = JSON.parse(content);
+      
+      // 로그 추가
+      data.logs.push(...this.logBuffer);
+      data.lastUpdate = new Date().toISOString();
+      data.forceSaved = true; // 강제 저장 표시
+      
+      // 파일에 쓰기 (동기)
+      fsSync.writeFileSync(this.currentLogFile, JSON.stringify(data, null, 2));
+      
+      // 버퍼 초기화
+      this.logBuffer = [];
+      
+      if (this.originalConsole) {
+        this.originalConsole.log(chalk.green('✅ 로그 강제 저장 완료'));
+      }
+      
+    } catch (error) {
+      if (this.originalConsole) {
+        this.originalConsole.error('동기 로그 플러시 실패:', error);
+      }
+    }
+  }
+
+  /**
+   * 로그 직접 기록
+   */
+  async writeLog(logData) {
+    try {
+      if (!this.currentLogFile) return;
+      
+      const content = await fs.readFile(this.currentLogFile, 'utf-8');
+      const data = JSON.parse(content);
+      
+      data.logs.push({
+        timestamp: new Date().toISOString(),
+        ...logData
+      });
+      
+      await fs.writeFile(this.currentLogFile, JSON.stringify(data, null, 2));
+      
+    } catch (error) {
+      this.originalConsole.error('로그 쓰기 실패:', error);
+    }
+  }
+
+  /**
+   * 정기 클린업 스케줄 시작
+   */
+  startCleanupSchedule() {
+    // 즉시 한 번 실행
+    this.cleanupOldLogs();
+    
+    // 정기적으로 실행
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupOldLogs();
+    }, this.config.checkInterval);
+  }
+
+  /**
+   * 오래된 로그 파일 삭제
+   */
+  async cleanupOldLogs() {
+    try {
+      const files = await fs.readdir(this.config.logDir);
+      const now = Date.now();
+      let deletedCount = 0;
+      
+      for (const file of files) {
+        // terminal-log로 시작하는 JSON 파일만 처리
+        if (!file.startsWith('terminal-log-') || !file.endsWith('.json')) {
+          continue;
+        }
+        
+        const filepath = path.join(this.config.logDir, file);
+        const stats = await fs.stat(filepath);
+        const age = now - stats.mtimeMs;
+        
+        // 48시간 경과한 파일 삭제
+        if (age > this.config.maxAge) {
+          await fs.unlink(filepath);
+          deletedCount++;
+          this.originalConsole.log(chalk.gray(`🗑️ 오래된 로그 삭제: ${file}`));
+        }
+      }
+      
+      if (deletedCount > 0) {
+        await this.writeLog({
+          type: 'CLEANUP',
+          level: 'info',
+          message: `${deletedCount}개의 오래된 로그 파일 삭제됨`,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+    } catch (error) {
+      this.originalConsole.error('로그 클린업 실패:', error);
+    }
+  }
+
+  /**
+   * 종료 처리
+   */
+  async shutdown() {
+    try {
+      console.log(chalk.yellow('📝 터미널 로거 종료 중...'));
+      
+      // 마지막 버퍼 플러시
+      await this.flushBuffer();
+      
+      // 종료 로그 기록
+      await this.writeLog({
+        type: 'SYSTEM',
+        level: 'info',
+        message: '터미널 로깅 시스템 종료',
+        timestamp: new Date().toISOString(),
+        sessionId: this.getSessionId()
+      });
+      
+      // 클린업 인터벌 정리
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+      }
+      
+      // console 원복
+      this.restoreConsole();
+      
+      // 로그 파일 경로 표시
+      if (this.currentLogFile) {
+        const logFileName = path.basename(this.currentLogFile);
+        const logFilePath = path.relative(process.cwd(), this.currentLogFile);
+        console.log(chalk.green('✅ 터미널 로거 종료 완료'));
+        console.log(chalk.cyan('📁 로그 파일 저장됨:'));
+        console.log(chalk.white.bold(`   ${logFileName}`));
+        console.log(chalk.gray(`   경로: ${logFilePath}`));
+      } else {
+        console.log(chalk.green('✅ 터미널 로거 종료 완료'));
+      }
+      
+    } catch (error) {
+      this.originalConsole.error('터미널 로거 종료 실패:', error);
+    }
+  }
+
+  /**
+   * 강제 종료 처리 (동기적)
+   */
+  forceShutdown() {
+    try {
+      if (this.originalConsole) {
+        this.originalConsole.log(chalk.yellow('\n⚠️ 강제 종료 감지 - 로그 저장 중...'));
+      }
+      
+      // 동기적으로 버퍼 플러시
+      this.flushBufferSync();
+      
+      // 종료 로그 기록 (동기)
+      if (this.currentLogFile) {
+        try {
+          const content = fsSync.readFileSync(this.currentLogFile, 'utf-8');
+          const data = JSON.parse(content);
+          data.logs.push({
+            timestamp: new Date().toISOString(),
+            type: 'SYSTEM',
+            level: 'warn',
+            message: '프로그램 강제 종료 (Ctrl+C)',
+            forcedExit: true
+          });
+          data.endTime = new Date().toISOString();
+          data.exitType = 'FORCED';
+          
+          fsSync.writeFileSync(this.currentLogFile, JSON.stringify(data, null, 2));
+        } catch (e) {
+          // 무시
+        }
+      }
+      
+      // 클린업 인터벌 정리
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+      }
+      
+      // console 원복
+      this.restoreConsole();
+      
+      // 로그 파일 경로 표시
+      if (this.originalConsole && this.currentLogFile) {
+        const logFileName = path.basename(this.currentLogFile);
+        const logFilePath = path.relative(process.cwd(), this.currentLogFile);
+        this.originalConsole.log(chalk.green('✅ 로그 저장 완료'));
+        this.originalConsole.log(chalk.red.bold('🚨 강제 종료 로그:'));
+        this.originalConsole.log(chalk.white.bold(`   ${logFileName}`));
+        this.originalConsole.log(chalk.gray(`   경로: ${logFilePath}`));
+      } else if (this.originalConsole) {
+        this.originalConsole.log(chalk.green('✅ 로그 저장 완료'));
+      }
+      
+    } catch (error) {
+      if (this.originalConsole) {
+        this.originalConsole.error('강제 종료 처리 실패:', error);
+      }
+    }
+  }
+
+  /**
+   * Console 원복
+   */
+  restoreConsole() {
+    Object.keys(this.originalConsole).forEach(method => {
+      console[method] = this.originalConsole[method];
+    });
+  }
+
+  /**
+   * 현재 세션 로그 조회
+   */
+  async getCurrentLogs() {
+    try {
+      if (!this.currentLogFile) return null;
+      
+      const content = await fs.readFile(this.currentLogFile, 'utf-8');
+      return JSON.parse(content);
+      
+    } catch (error) {
+      this.originalConsole.error('로그 조회 실패:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 통계 정보 조회
+   */
+  async getStatistics() {
+    try {
+      const files = await fs.readdir(this.config.logDir);
+      const terminalLogs = files.filter(f => 
+        f.startsWith('terminal-log-') && f.endsWith('.json')
+      );
+      
+      let totalSize = 0;
+      let oldestFile = null;
+      let newestFile = null;
+      
+      for (const file of terminalLogs) {
+        const filepath = path.join(this.config.logDir, file);
+        const stats = await fs.stat(filepath);
+        totalSize += stats.size;
+        
+        if (!oldestFile || stats.mtimeMs < oldestFile.time) {
+          oldestFile = { name: file, time: stats.mtimeMs };
+        }
+        
+        if (!newestFile || stats.mtimeMs > newestFile.time) {
+          newestFile = { name: file, time: stats.mtimeMs };
+        }
+      }
+      
+      return {
+        totalFiles: terminalLogs.length,
+        totalSize: (totalSize / 1024 / 1024).toFixed(2) + ' MB',
+        oldestFile: oldestFile ? {
+          name: oldestFile.name,
+          age: this.formatAge(Date.now() - oldestFile.time)
+        } : null,
+        newestFile: newestFile ? {
+          name: newestFile.name,
+          age: this.formatAge(Date.now() - newestFile.time)
+        } : null,
+        currentSession: this.currentLogFile ? path.basename(this.currentLogFile) : null
+      };
+      
+    } catch (error) {
+      this.originalConsole.error('통계 조회 실패:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 시간 포맷팅
+   */
+  formatAge(ms) {
+    const hours = Math.floor(ms / (1000 * 60 * 60));
+    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (hours > 0) {
+      return `${hours}시간 ${minutes}분`;
+    }
+    return `${minutes}분`;
+  }
+}
+
+// 싱글톤 인스턴스
+let terminalLogger = null;
+
+/**
+ * 터미널 로거 초기화
+ */
+function initializeTerminalLogger(config = {}) {
+  if (!terminalLogger) {
+    terminalLogger = new TerminalLogger(config);
+  }
+  return terminalLogger;
+}
+
+/**
+ * 터미널 로거 인스턴스 가져오기
+ */
+function getTerminalLogger() {
+  if (!terminalLogger) {
+    terminalLogger = new TerminalLogger();
+  }
+  return terminalLogger;
+}
+
+// 프로세스 종료 시 처리
+let isShuttingDown = false;
+
+// 정상 종료 시
+process.on('exit', (code) => {
+  if (terminalLogger && !isShuttingDown) {
+    terminalLogger.forceShutdown();
+  }
+});
+
+// Ctrl+C (SIGINT) 처리
+process.on('SIGINT', () => {
+  if (isShuttingDown) {
+    // 두 번째 Ctrl+C는 즉시 종료
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  
+  if (terminalLogger) {
+    // 동기적으로 처리
+    terminalLogger.forceShutdown();
+    
+    // 약간의 지연 후 종료 (파일 쓰기 완료 보장)
+    setTimeout(() => {
+      process.exit(0);
+    }, 100);
+  } else {
+    process.exit(0);
+  }
+});
+
+// SIGTERM 처리 (Docker, PM2 등에서 사용)
+process.on('SIGTERM', () => {
+  if (isShuttingDown) {
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  
+  if (terminalLogger) {
+    terminalLogger.forceShutdown();
+    setTimeout(() => {
+      process.exit(0);
+    }, 100);
+  } else {
+    process.exit(0);
+  }
+});
+
+// Windows 전용 처리
+if (process.platform === 'win32') {
+  const readline = require('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.on('SIGINT', () => {
+    process.emit('SIGINT');
+  });
+}
+
+// 예기치 않은 종료 처리
+process.on('beforeExit', (code) => {
+  if (terminalLogger && !isShuttingDown) {
+    isShuttingDown = true;
+    terminalLogger.forceShutdown();
+  }
+});
+
+// 처리되지 않은 예외 처리
+process.on('uncaughtException', (error) => {
+  if (terminalLogger) {
+    try {
+      // 에러를 로그에 기록
+      if (terminalLogger.currentLogFile) {
+        const content = fsSync.readFileSync(terminalLogger.currentLogFile, 'utf-8');
+        const data = JSON.parse(content);
+        data.logs.push({
+          timestamp: new Date().toISOString(),
+          type: 'ERROR',
+          level: 'error',
+          message: `Uncaught Exception: ${error.message}`,
+          stack: error.stack,
+          fatal: true
+        });
+        fsSync.writeFileSync(terminalLogger.currentLogFile, JSON.stringify(data, null, 2));
+      }
+    } catch (e) {
+      // 무시
+    }
+    
+    terminalLogger.forceShutdown();
+  }
+  
+  // 원본 에러 출력
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+module.exports = {
+  TerminalLogger,
+  initializeTerminalLogger,
+  getTerminalLogger
+};

@@ -1,0 +1,794 @@
+﻿/**
+ * PopupService - 팝업 감지 및 처리 서비스
+ * 
+ * YouTube Premium 워크플로우에서 나타나는 모든 팝업 처리
+ * 날짜 정보 추출 및 확인 버튼 처리
+ */
+
+const chalk = require('chalk');
+
+class PopupService {
+  constructor(config = {}) {
+    this.config = {
+      debugMode: config.debugMode || false,
+      waitForPopup: config.waitForPopup || 3000,
+      popupTimeout: config.popupTimeout || 10000,
+      ...config
+    };
+    
+    this.buttonService = config.buttonService || null;
+  }
+
+  /**
+   * 팝업 대기 및 감지
+   */
+  async waitForPopup(page, timeout = null) {
+    const waitTime = timeout || this.config.waitForPopup;
+    
+    if (this.config.debugMode) {
+      console.log(chalk.gray(`Waiting ${waitTime}ms for popup...`));
+    }
+    
+    await new Promise(r => setTimeout(r, waitTime));
+    
+    return await this.detectPopup(page);
+  }
+
+  /**
+   * 팝업 감지
+   */
+  async detectPopup(page) {
+    const popupInfo = await page.evaluate(() => {
+      const selectors = [
+        '[role="dialog"]',
+        '[aria-modal="true"]',
+        'tp-yt-paper-dialog',
+        'yt-dialog',
+        'ytd-popup-container',
+        '.popup',
+        '.modal'
+      ];
+      
+      const dialogs = document.querySelectorAll(selectors.join(', '));
+      
+      for (const dialog of dialogs) {
+        // 표시되는 팝업만 확인
+        if (dialog.offsetHeight > 0 && dialog.offsetWidth > 0) {
+          const text = dialog.textContent?.trim() || '';
+          const buttons = dialog.querySelectorAll('button');
+          
+          return {
+            hasPopup: true,
+            text: text.substring(0, 500),
+            buttonCount: buttons.length,
+            buttons: Array.from(buttons).map(btn => btn.textContent?.trim()).filter(Boolean),
+            type: dialog.tagName.toLowerCase(),
+            className: dialog.className
+          };
+        }
+      }
+      
+      return { hasPopup: false };
+    });
+    
+    if (this.config.debugMode) {
+      if (popupInfo.hasPopup) {
+        console.log(chalk.green('✓ Popup detected'));
+        console.log(chalk.gray(`  Type: ${popupInfo.type}`));
+        console.log(chalk.gray(`  Buttons: ${popupInfo.buttons.join(', ')}`));
+      } else {
+        console.log(chalk.yellow('✗ No popup found'));
+      }
+    }
+    
+    return popupInfo;
+  }
+
+  /**
+   * 일시중지 확인 팝업 처리
+   */
+  async handlePausePopup(page, language = 'en') {
+    const popupInfo = await this.waitForPopup(page);
+    
+    if (!popupInfo.hasPopup) {
+      return {
+        handled: false,
+        reason: 'No popup detected'
+      };
+    }
+    
+    // 날짜 정보 추출
+    const dates = this.extractDatesFromText(popupInfo.text);
+    
+    // 확인 버튼 클릭
+    const confirmResult = await this.clickConfirmButton(page, language, 'pause');
+    
+    if (confirmResult.clicked) {
+      await new Promise(r => setTimeout(r, this.config.waitForPopup));
+      
+      return {
+        handled: true,
+        pauseDate: dates[0] || null,
+        resumeDate: dates[1] || null,
+        buttonClicked: confirmResult.text
+      };
+    }
+    
+    return {
+      handled: false,
+      reason: 'Confirm button not found',
+      dates
+    };
+  }
+
+  /**
+   * 재개 확인 팝업 처리 - 향상된 다국어 지원
+   */
+  async handleResumePopup(page, language = 'en') {
+    // 먼저 일반 팝업 대기
+    await new Promise(r => setTimeout(r, this.config.waitForPopup));
+    
+    // 재개 팝업 감지 (다국어 지원)
+    let popupInfo = await this.detectResumePopup(page, language);
+    
+    // 팝업이 감지되지 않으면 fallback 시도
+    if (!popupInfo.hasPopup) {
+      if (this.config.debugMode) {
+        console.log(chalk.yellow('⚠ No resume popup detected with language-specific texts, trying fallback...'));
+      }
+      popupInfo = await this.detectResumePopupFallback(page, language);
+    }
+    
+    if (!popupInfo.hasPopup) {
+      // 일반 팝업 감지 시도
+      const generalPopup = await this.detectPopup(page);
+      
+      if (!generalPopup.hasPopup) {
+        if (this.config.debugMode) {
+          console.log(chalk.yellow('✗ No resume popup detected'));
+        }
+        return {
+          handled: false,
+          reason: 'No popup detected'
+        };
+      }
+      
+      // 일반 팝업이 있지만 재개 팝업이 아닌 경우
+      if (this.config.debugMode) {
+        console.log(chalk.gray('Found popup but not resume popup'));
+      }
+    }
+    
+    if (this.config.debugMode) {
+      console.log(chalk.green('✓ Resume popup detected'));
+      console.log(chalk.gray(`  Language: ${language}`));
+    }
+    
+    // 날짜 정보 추출 (안전한 처리)
+    const popupText = popupInfo?.text || '';
+    const dates = popupText ? this.extractDatesFromText(popupText) : [];
+    
+    // 확인 버튼 클릭 (향상된 다국어 지원)
+    const confirmResult = await this.clickResumeConfirmButton(page, language);
+    
+    if (confirmResult.clicked) {
+      await new Promise(r => setTimeout(r, this.config.waitForPopup));
+      
+      if (this.config.debugMode) {
+        console.log(chalk.green('✓ Resume confirmed'));
+        console.log(chalk.gray(`  Button clicked: ${confirmResult.text}`));
+      }
+      
+      return {
+        handled: true,
+        resumeDate: dates[0] || null,
+        nextBillingDate: dates[1] || dates[0] || null,
+        buttonClicked: confirmResult.text
+      };
+    }
+    
+    return {
+      handled: false,
+      reason: 'Confirm button not found',
+      dates,
+      availableButtons: popupInfo.buttons
+    };
+  }
+  
+  /**
+   * 재개 확인 버튼 클릭 - 다국어 지원
+   */
+  async clickResumeConfirmButton(page, language) {
+    const { languages } = require('../infrastructure/config/multilanguage');
+    const langData = languages[language] || languages.en;
+    
+    // 확인 버튼 텍스트 목록
+    const confirmTexts = [
+      ...(langData.buttons.confirm || []),
+      ...(langData.buttons.resume || []),
+      'OK', 'Yes'
+    ];
+    
+    // 취소 버튼 텍스트 (제외용)
+    const cancelTexts = langData.buttons.cancel || ['Cancel', '취소'];
+    
+    return await page.evaluate((confirm, cancel) => {
+      const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"], tp-yt-paper-dialog');
+      
+      for (const dialog of dialogs) {
+        if (dialog.offsetHeight === 0) continue;
+        
+        const buttons = dialog.querySelectorAll('button, tp-yt-paper-button, yt-button-renderer button');
+        
+        for (const button of buttons) {
+          const btnText = button.textContent?.trim();
+          if (!btnText) continue;
+          
+          // 취소 버튼 제외
+          if (cancel.some(text => btnText === text || btnText.includes(text))) {
+            continue;
+          }
+          
+          // 확인 버튼 찾기
+          if (confirm.some(text => btnText === text || btnText.includes(text))) {
+            button.click();
+            return { clicked: true, text: btnText };
+          }
+        }
+      }
+      
+      return { clicked: false };
+    }, confirmTexts, cancelTexts);
+  }
+
+  /**
+   * 일반 팝업 처리
+   */
+  async handleGenericPopup(page, language = 'en') {
+    const popupInfo = await this.detectPopup(page);
+    
+    if (!popupInfo.hasPopup) {
+      return { handled: false };
+    }
+    
+    // 팝업 내용 분석
+    const analysis = this.analyzePopupContent(popupInfo.text);
+    
+    // 적절한 버튼 클릭
+    if (analysis.requiresConfirmation) {
+      const confirmResult = await this.clickConfirmButton(page, language, 'general');
+      
+      return {
+        handled: confirmResult.clicked,
+        type: analysis.type,
+        action: confirmResult.text
+      };
+    }
+    
+    // 취소가 필요한 경우
+    if (analysis.requiresCancellation) {
+      const cancelResult = await this.clickCancelButton(page, language);
+      
+      return {
+        handled: cancelResult.clicked,
+        type: analysis.type,
+        action: 'cancelled'
+      };
+    }
+    
+    return {
+      handled: false,
+      type: analysis.type
+    };
+  }
+
+  /**
+   * 확인 버튼 클릭
+   */
+  async clickConfirmButton(page, language, action) {
+    if (this.buttonService) {
+      return await this.buttonService.clickPopupConfirmButton(page, language, action);
+    }
+    
+    // 직접 구현
+    const confirmTexts = this.getConfirmTexts(language, action);
+    
+    return await page.evaluate((texts) => {
+      const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+      
+      for (const dialog of dialogs) {
+        if (dialog.offsetHeight === 0) continue;
+        
+        const buttons = dialog.querySelectorAll('button');
+        for (const button of buttons) {
+          const btnText = button.textContent?.trim();
+          
+          // 취소 버튼 제외
+          if (btnText && (btnText === '취소' || btnText === 'Cancel')) {
+            continue;
+          }
+          
+          if (btnText && texts.some(text => btnText === text || btnText.includes(text))) {
+            button.click();
+            return { clicked: true, text: btnText };
+          }
+        }
+      }
+      
+      return { clicked: false };
+    }, confirmTexts);
+  }
+
+  /**
+   * 취소 버튼 클릭
+   */
+  async clickCancelButton(page, language) {
+    const cancelTexts = language === 'ko' ? 
+      ['취소', '닫기', '아니오'] : 
+      ['Cancel', 'Close', 'No'];
+    
+    return await page.evaluate((texts) => {
+      const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+      
+      for (const dialog of dialogs) {
+        if (dialog.offsetHeight === 0) continue;
+        
+        const buttons = dialog.querySelectorAll('button');
+        for (const button of buttons) {
+          const btnText = button.textContent?.trim();
+          
+          if (btnText && texts.some(text => btnText === text)) {
+            button.click();
+            return { clicked: true, text: btnText };
+          }
+        }
+      }
+      
+      return { clicked: false };
+    }, cancelTexts);
+  }
+
+  /**
+   * 팝업 닫기 (X 버튼 또는 ESC)
+   */
+  async closePopup(page) {
+    // X 버튼 클릭 시도
+    const closeButtonClicked = await page.evaluate(() => {
+      const closeButtons = document.querySelectorAll(
+        '[aria-label*="Close"], [aria-label*="닫기"], .close-button, .modal-close'
+      );
+      
+      for (const button of closeButtons) {
+        if (button.offsetHeight > 0) {
+          button.click();
+          return true;
+        }
+      }
+      
+      return false;
+    });
+    
+    if (closeButtonClicked) {
+      return { closed: true, method: 'button' };
+    }
+    
+    // ESC 키 시도
+    await page.keyboard.press('Escape');
+    await new Promise(r => setTimeout(r, 500));
+    
+    // 팝업이 닫혔는지 확인
+    const stillHasPopup = await this.detectPopup(page);
+    
+    return {
+      closed: !stillHasPopup.hasPopup,
+      method: 'escape'
+    };
+  }
+
+  /**
+   * 날짜 추출 및 정규화
+   * 특히 YouTube Premium의 "Next billing date" 형식을 정확히 처리
+   */
+  extractDatesFromText(text) {
+    const dates = [];
+    
+    // 텍스트가 없거나 유효하지 않은 경우 빈 배열 반환
+    if (!text || typeof text !== 'string') {
+      return dates;
+    }
+    
+    // 1. Next billing date 특별 처리 (Sep 11 형식)
+    const billingDateMatch = text.match(/Next billing date:\s*([A-Za-z]+\s+\d{1,2})/i);
+    if (billingDateMatch) {
+      const normalized = this.normalizeDate(billingDateMatch[1]);
+      if (normalized) {
+        dates.push(normalized);
+        return dates; // Next billing date를 찾으면 이것만 반환
+      }
+    }
+    
+    // 2. 다음 결제일 (한국어)
+    const koreanBillingMatch = text.match(/다음 결제일:\s*(\d{4}년\s*\d{1,2}월\s*\d{1,2}일)/);
+    if (koreanBillingMatch) {
+      const normalized = this.normalizeDate(koreanBillingMatch[1]);
+      if (normalized) {
+        dates.push(normalized);
+        return dates;
+      }
+    }
+    
+    // 3. 기타 날짜 패턴들
+    const patterns = [
+      // 영어 날짜 형식 (January 1, 2024 또는 Jan 1, 2024)
+      /(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s*\d{4}/gi,
+      // 월 일 형식 (Sep 11) - 년도 없음
+      /(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}/gi,
+      // 한국어 날짜 형식 (2024년 1월 1일)
+      /\d{4}년\s*\d{1,2}월\s*\d{1,2}일/g,
+      // ISO 형식 (2024-01-01)
+      /\d{4}-\d{2}-\d{2}/g,
+      // 점 구분 형식 (2024.01.01)
+      /\d{4}\.\s*\d{1,2}\.\s*\d{1,2}/g,
+      // 슬래시 형식 (01/01/2024 또는 2024/01/01)
+      /\d{1,2}\/\d{1,2}\/\d{4}/g,
+      /\d{4}\/\d{1,2}\/\d{1,2}/g
+    ];
+    
+    for (const pattern of patterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const normalized = this.normalizeDate(match);
+          if (normalized) {
+            dates.push(normalized);
+          }
+        }
+      }
+    }
+    
+    // 중복 제거 및 정렬
+    return [...new Set(dates)];
+  }
+
+  /**
+   * 날짜 형식 정규화 (YYYY-MM-DD 형식으로 변환)
+   */
+  normalizeDate(dateStr) {
+    try {
+      // 입력값 검증
+      if (!dateStr || typeof dateStr !== 'string') {
+        return null;
+      }
+      
+      // 공백 제거 및 정규화
+      dateStr = dateStr.trim();
+      // 월 이름 맵핑
+      const monthMap = {
+        'january': '01', 'jan': '01',
+        'february': '02', 'feb': '02',
+        'march': '03', 'mar': '03',
+        'april': '04', 'apr': '04',
+        'may': '05',
+        'june': '06', 'jun': '06',
+        'july': '07', 'jul': '07',
+        'august': '08', 'aug': '08',
+        'september': '09', 'sep': '09', 'sept': '09',
+        'october': '10', 'oct': '10',
+        'november': '11', 'nov': '11',
+        'december': '12', 'dec': '12'
+      };
+
+      let year, month, day;
+      
+      // 현재 날짜 정보 (년도가 없는 경우 사용)
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+
+      // ISO 형식 (2024-01-01)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return dateStr;
+      }
+
+      // 점 구분 형식 (2024.01.01 또는 2024. 01. 01)
+      if (/^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}$/.test(dateStr)) {
+        const parts = dateStr.split(/\.\s*/);
+        year = parts[0];
+        month = parts[1].padStart(2, '0');
+        day = parts[2].padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+
+      // 한국어 날짜 (2024년 1월 1일)
+      if (/^\d{4}년\s*\d{1,2}월\s*\d{1,2}일$/.test(dateStr)) {
+        const match = dateStr.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/);
+        year = match[1];
+        month = match[2].padStart(2, '0');
+        day = match[3].padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+
+      // 영어 날짜 (January 1, 2024)
+      const engMatch = dateStr.match(/(\w+)\s+(\d{1,2}),?\s*(\d{4})/i);
+      if (engMatch) {
+        const monthName = engMatch[1].toLowerCase();
+        month = monthMap[monthName];
+        if (!month) return null;
+        day = engMatch[2].padStart(2, '0');
+        year = engMatch[3];
+        return `${year}-${month}-${day}`;
+      }
+      
+      // 월 일 형식 (Sep 11) - 년도 없음
+      const monthDayMatch = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2})$/i);
+      if (monthDayMatch) {
+        const monthName = monthDayMatch[1].toLowerCase();
+        month = monthMap[monthName];
+        if (!month) return null;
+        day = monthDayMatch[2].padStart(2, '0');
+        
+        // 현재 날짜와 비교하여 년도 결정
+        const monthNum = parseInt(month);
+        if (monthNum < currentMonth) {
+          // 해당 월이 현재 월보다 이전이면 내년
+          year = currentYear + 1;
+        } else {
+          // 해당 월이 현재 월 이후면 올해
+          year = currentYear;
+        }
+        
+        return `${year}-${month}-${day}`;
+      }
+
+      // 슬래시 형식 (MM/DD/YYYY)
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateStr)) {
+        const parts = dateStr.split('/');
+        month = parts[0].padStart(2, '0');
+        day = parts[1].padStart(2, '0');
+        year = parts[2];
+        return `${year}-${month}-${day}`;
+      }
+
+      // 슬래시 형식 (YYYY/MM/DD)
+      if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(dateStr)) {
+        const parts = dateStr.split('/');
+        year = parts[0];
+        month = parts[1].padStart(2, '0');
+        day = parts[2].padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+
+      // 파싱 실패 시 원본 반환
+      console.log(`날짜 파싱 실패: ${dateStr}`);
+      return null;
+      
+    } catch (error) {
+      console.error(`날짜 정규화 오류: ${dateStr}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 팝업 내용 분석
+   */
+  analyzePopupContent(text) {
+    const analysis = {
+      type: 'unknown',
+      requiresConfirmation: false,
+      requiresCancellation: false,
+      isError: false,
+      isWarning: false
+    };
+    
+    // 에러 팝업 감지
+    if (text.includes('error') || text.includes('오류') || 
+        text.includes('failed') || text.includes('실패')) {
+      analysis.type = 'error';
+      analysis.isError = true;
+      analysis.requiresConfirmation = true;
+    }
+    
+    // 경고 팝업 감지
+    else if (text.includes('warning') || text.includes('경고') ||
+             text.includes('notice') || text.includes('알림')) {
+      analysis.type = 'warning';
+      analysis.isWarning = true;
+      analysis.requiresConfirmation = true;
+    }
+    
+    // 확인 팝업 감지
+    else if (text.includes('confirm') || text.includes('확인') ||
+             text.includes('are you sure') || text.includes('정말')) {
+      analysis.type = 'confirmation';
+      analysis.requiresConfirmation = true;
+    }
+    
+    // 정보 팝업
+    else {
+      analysis.type = 'info';
+      analysis.requiresConfirmation = true;
+    }
+    
+    return analysis;
+  }
+
+  /**
+   * 확인 텍스트 가져오기 - 다국어 지원
+   */
+  getConfirmTexts(language, action) {
+    // multilanguage.js에서 언어 데이터 가져오기
+    const { languages } = require('../infrastructure/config/multilanguage');
+    const langData = languages[language] || languages.en;
+    
+    // 액션별 확인 텍스트 매핑
+    if (action === 'pause') {
+      return [
+        ...(langData.buttons.pauseMembership || []),
+        ...(langData.buttons.confirm || []),
+        langData.buttons.pause?.[0] || 'Pause'
+      ];
+    } else if (action === 'resume') {
+      return [
+        ...(langData.buttons.resumeMembership || []),
+        ...(langData.buttons.resume || []),
+        ...(langData.buttons.confirm || []),
+        'OK', 'Yes'
+      ];
+    } else {
+      return langData.buttons.confirm || ['Confirm', 'OK', 'Yes'];
+    }
+  }
+  
+  /**
+   * 재개 팝업 감지 향상 - 다국어 지원
+   */
+  async detectResumePopup(page, language = 'en') {
+    const { languages } = require('../infrastructure/config/multilanguage');
+    const langData = languages[language] || languages.en;
+    
+    // 디버그 로깅 추가
+    if (this.config.debugMode) {
+      console.log(chalk.gray(`[DetectResumePopup] Language: ${language}`));
+      console.log(chalk.gray(`[DetectResumePopup] Has popupTexts: ${!!langData.popupTexts}`));
+      if (langData.popupTexts) {
+        console.log(chalk.gray(`[DetectResumePopup] Resume texts: ${langData.popupTexts.resumeConfirmation?.join(', ') || 'None'}}`));
+      }
+    }
+    
+    const popupInfo = await page.evaluate((popupTexts) => {
+      const selectors = [
+        '[role="dialog"]',
+        '[aria-modal="true"]',
+        'tp-yt-paper-dialog',
+        'yt-dialog',
+        'ytd-popup-container'
+      ];
+      
+      for (const selector of selectors) {
+        const dialogs = document.querySelectorAll(selector);
+        
+        for (const dialog of dialogs) {
+          if (dialog.offsetHeight > 0 && dialog.offsetWidth > 0) {
+            const text = dialog.textContent?.trim() || '';
+            
+            // 재개 관련 텍스트 확인 - 안전한 처리
+            const hasResumeText = 
+              (popupTexts?.resumeConfirmation && popupTexts.resumeConfirmation.some(t => text.includes(t))) ||
+              (popupTexts?.willBeResumed && popupTexts.willBeResumed.some(t => text.includes(t))) ||
+              (popupTexts?.nextCharge && popupTexts.nextCharge.some(t => text.includes(t))) ||
+              // 러시아어 특별 처리 - popupTexts가 없어도 키워드 검색
+              text.includes('Возобновить подписку') ||
+              text.includes('Подписка будет возобновлена') ||
+              text.includes('Следующий платеж') ||
+              text.includes('Следующее списание');
+            
+            if (hasResumeText) {
+              const buttons = dialog.querySelectorAll('button');
+              return {
+                hasPopup: true,
+                isResumePopup: true,
+                text: text.substring(0, 500),
+                buttons: Array.from(buttons).map(btn => ({
+                  text: btn.textContent?.trim(),
+                  ariaLabel: btn.getAttribute('aria-label')
+                })).filter(b => b.text)
+              };
+            }
+          }
+        }
+      }
+      
+      return { hasPopup: false };
+    }, langData.popupTexts || {});
+    
+    // 디버그 로깅
+    if (this.config.debugMode) {
+      console.log(chalk.gray(`[DetectResumePopup] Result: ${popupInfo.hasPopup ? 'Found' : 'Not found'}`));
+      if (popupInfo.hasPopup) {
+        console.log(chalk.gray(`[DetectResumePopup] Text snippet: ${popupInfo.text?.substring(0, 100)}...`));
+        console.log(chalk.gray(`[DetectResumePopup] Buttons: ${popupInfo.buttons?.map(b => b.text).join(', ')}`));
+      }
+    }
+    
+    return popupInfo;
+  }
+  
+  /**
+   * 재개 팝업 fallback 감지 - 언어에 관계없이 버튼으로 판단
+   */
+  async detectResumePopupFallback(page, language) {
+    const popupInfo = await page.evaluate(() => {
+      const selectors = [
+        '[role="dialog"]',
+        '[aria-modal="true"]',
+        'tp-yt-paper-dialog',
+        'yt-dialog',
+        'ytd-popup-container'
+      ];
+      
+      for (const selector of selectors) {
+        const dialogs = document.querySelectorAll(selector);
+        
+        for (const dialog of dialogs) {
+          if (dialog.offsetHeight > 0 && dialog.offsetWidth > 0) {
+            const text = dialog.textContent?.trim() || '';
+            const buttons = dialog.querySelectorAll('button');
+            const buttonTexts = Array.from(buttons).map(btn => btn.textContent?.trim()).filter(t => t);
+            
+            // 버튼 텍스트로 재개 팝업 판단
+            // 재개 팝업은 보통 확인/취소 2개 버튼을 가짐
+            const hasConfirmCancel = buttonTexts.length === 2 && 
+              buttonTexts.some(t => 
+                // 확인 버튼 키워드
+                t.includes('Возобновить') || // 러시아어 "재개"
+                t.includes('재개') || // 한국어
+                t.includes('Resume') || // 영어
+                t.includes('Reanudar') || // 스페인어
+                t.includes('Reprendre') || // 프랑스어
+                t.includes('Retomar') || // 포르투갈어
+                t.includes('Fortsetzen') || // 독일어
+                t.includes('Devam') // 터키어
+              ) &&
+              buttonTexts.some(t => 
+                // 취소 버튼 키워드
+                t.includes('Отмена') || // 러시아어 "취소"
+                t.includes('취소') || // 한국어
+                t.includes('Cancel') || // 영어
+                t.includes('Cancelar') || // 스페인어/포르투갈어
+                t.includes('Annuler') || // 프랑스어
+                t.includes('Abbrechen') || // 독일어
+                t.includes('İptal') // 터키어
+              );
+            
+            // 또는 팝업 텍스트에 날짜 패턴이 있는지 확인
+            const hasDatePattern = /\d{1,2}[\s\/\-\.]\d{1,2}|\d{4}[\s\/\-\.]\d{1,2}[\s\/\-\.]\d{1,2}/.test(text);
+            
+            if (hasConfirmCancel || hasDatePattern) {
+              return {
+                hasPopup: true,
+                isResumePopup: true,
+                text: text.substring(0, 500),
+                buttons: buttonTexts.map(text => ({ text })),
+                detectedBy: 'fallback'
+              };
+            }
+          }
+        }
+      }
+      
+      return { hasPopup: false };
+    });
+    
+    if (this.config.debugMode) {
+      console.log(chalk.gray(`[DetectResumePopupFallback] Result: ${popupInfo.hasPopup ? 'Found' : 'Not found'}`));
+      if (popupInfo.hasPopup) {
+        console.log(chalk.gray(`[DetectResumePopupFallback] Detected by: ${popupInfo.detectedBy}`));
+        console.log(chalk.gray(`[DetectResumePopupFallback] Buttons: ${popupInfo.buttons?.map(b => b.text).join(', ')}`));
+      }
+    }
+    
+    return popupInfo;
+  }
+}
+
+module.exports = PopupService;

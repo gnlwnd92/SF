@@ -1,0 +1,80 @@
+# 의존성
+node_modules/
+package-lock.json
+
+# 환경 설정
+.env
+.env.local
+.env.production
+
+# 인증 파일 (절대 커밋하지 마세요!)
+credentials/
+service-account.json
+service_account.json
+google-credentials.json
+**/service-account*.json
+**/service_account*.json
+**/google-credentials*.json
+
+# package.json은 포함
+!package.json
+
+# 로그
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 스크린샷
+screenshots/
+*.png
+*.jpg
+*.jpeg
+
+# 데이터 폴더 (대용량 파일 포함)
+data/
+
+# 백업
+backup/
+*.zip
+*.tar.gz
+backup_*
+
+# 임시 파일
+temp/
+tmp/
+.tmp/
+*.tmp
+
+# OS 파일
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 테스트 결과
+test-results/
+coverage/
+.nyc_output/
+
+# 빌드 파일
+dist/
+build/
+out/
+
+# 기타
+.cache/
+*.pid
+*.seed
+*.pid.lock
+
+# Windows 예약 파일
+nul
+NUL

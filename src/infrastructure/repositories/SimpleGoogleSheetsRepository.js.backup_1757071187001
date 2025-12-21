@@ -1,0 +1,453 @@
+/**
+ * 간단한 Google Sheets Repository
+ * 최소 기능만 구현하여 빠른 로딩
+ */
+
+const { google } = require('googleapis');
+const path = require('path');
+const fs = require('fs');
+const EmailNormalizer = require('../../utils/EmailNormalizer');
+
+class SimpleGoogleSheetsRepository {
+  constructor(config = {}) {
+    this.spreadsheetId = config.spreadsheetId || process.env.GOOGLE_SHEETS_ID;
+    this.sheets = null;
+    this.auth = null;
+  }
+
+  /**
+   * Google Sheets 인증 초기화
+   */
+  async initialize() {
+    try {
+      // Service Account 파일 찾기
+      const possiblePaths = [
+        path.join(__dirname, '..', '..', '..', 'credentials', 'service-account.json'),
+        path.join(__dirname, '..', '..', '..', 'service_account.json')
+      ];
+
+      let serviceAccountPath;
+      for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+          serviceAccountPath = p;
+          break;
+        }
+      }
+
+      if (!serviceAccountPath) {
+        console.log('[SimpleGoogleSheets] Service Account 없음, Mock 데이터 사용');
+        return false;
+      }
+
+      // Service Account 로드
+      const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+      
+      // Google Auth 설정
+      this.auth = new google.auth.GoogleAuth({
+        credentials: serviceAccount,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets']
+      });
+
+      // Sheets API 클라이언트
+      this.sheets = google.sheets({ version: 'v4', auth: this.auth });
+      
+      return true;
+    } catch (error) {
+      console.warn('[SimpleGoogleSheets] 초기화 실패:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 결제재개 탭 데이터 가져오기
+   */
+  async getResumeTasksWithMapping() {
+    try {
+      if (!this.sheets) {
+        await this.initialize();
+      }
+
+      if (!this.sheets) {
+        // Mock 데이터 반환
+        return this.getMockResumeData();
+      }
+
+      // 로컬 매핑 파일 체크 (우선순위 낮춤 - Google Sheets 우선)
+      const localMappingPath = path.join(__dirname, '..', '..', '..', 'data', 'mappings', 'email-to-adspower.json');
+      let localMapping = null;
+      
+      // 로컬 캐시는 백업용으로만 사용 (실시간 데이터 우선)
+      const USE_LOCAL_CACHE = false; // 로컬 캐시 비활성화
+      
+      if (USE_LOCAL_CACHE && fs.existsSync(localMappingPath)) {
+        try {
+          localMapping = JSON.parse(fs.readFileSync(localMappingPath, 'utf8'));
+          console.log('[SimpleGoogleSheets] 로컬 매핑 파일 로드 성공');
+        } catch (error) {
+          console.warn('[SimpleGoogleSheets] 로컬 매핑 파일 파싱 실패:', error.message);
+        }
+      } else {
+        console.log('[SimpleGoogleSheets] Google Sheets에서 실시간 데이터 로드');
+      }
+
+      // 1. 먼저 애즈파워현황 탭에서 매핑 정보 가져오기 (우선순위 2)
+      const mappingResponse = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: '애즈파워현황!A2:D1000' // A: 번호, B: 애즈파워아이디, C: group, D: 아이디
+      });
+      
+      const mappingRows = mappingResponse.data.values || [];
+      const adsPowerMapping = new Map();
+      
+      // 아이디 -> 애즈파워아이디 매핑 생성 (정규화 적용)
+      mappingRows.forEach(row => {
+        const accountId = row[3]; // D열: 아이디
+        const adsPowerId = row[1]; // B열: 애즈파워아이디
+        const adsPowerNumber = row[0]; // A열: 애즈파워번호
+        const group = row[2]; // C열: group
+        
+        if (accountId && adsPowerId) {
+          // 원본 이메일과 정규화된 이메일 모두 매핑
+          const normalizedEmail = EmailNormalizer.normalize(accountId);
+          const mappingData = {
+            adsPowerId: adsPowerId,
+            adsPowerNumber: adsPowerNumber,
+            group: group,
+            originalEmail: accountId  // 원본 이메일도 저장
+          };
+          
+          // 원본 이메일로 매핑
+          adsPowerMapping.set(accountId, mappingData);
+          
+          // 정규화된 이메일로도 매핑 (다를 경우에만)
+          if (normalizedEmail && normalizedEmail !== accountId.toLowerCase()) {
+            adsPowerMapping.set(normalizedEmail, mappingData);
+          }
+          
+          // 유저네임만으로도 매핑 (fuzzy matching용)
+          const username = EmailNormalizer.extractUsername(accountId);
+          if (username && !adsPowerMapping.has(username)) {
+            adsPowerMapping.set(username, mappingData);
+          }
+        }
+      });
+
+      // 2. 결제재개 탭 데이터 가져오기
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: '결제재개!A2:H1000' // A:아이디(이메일), B:비밀번호, C:복구이메일, D:코드(TOTP), E:상태, F:다음결제일, G:IP, H:결과
+      });
+
+      const rows = response.data.values || [];
+      const tasks = [];
+
+      rows.forEach((row, index) => {
+        const accountId = row[0]; // A열: 아이디(이메일주소)
+        const password = row[1]; // B열: 비밀번호
+        const recoveryEmail = row[2]; // C열: 복구이메일
+        const totpCode = row[3]; // D열: 코드 (TOTP Secret)
+        const status = row[4] || '미확인'; // E열: 상태
+        const nextPaymentDate = row[5]; // F열: 다음결제일
+        const ip = row[6]; // G열: IP
+        const result = row[7]; // H열: 결과
+        
+        if (accountId) {
+          // 로컬 매핑 파일 우선 확인
+          let adsPowerInfo = null;
+          
+          if (localMapping && localMapping[accountId]) {
+            adsPowerInfo = {
+              adsPowerId: localMapping[accountId],
+              adsPowerNumber: null,
+              group: null,
+              originalEmail: accountId
+            };
+          }
+          
+          // 로컬 매핑에서 못 찾으면 Google Sheets 매핑 확인
+          if (!adsPowerInfo) {
+            adsPowerInfo = adsPowerMapping.get(accountId);
+            
+            // 원본으로 못 찾으면 정규화된 이메일로 시도
+            if (!adsPowerInfo) {
+              const normalizedEmail = EmailNormalizer.normalize(accountId);
+              if (normalizedEmail) {
+                adsPowerInfo = adsPowerMapping.get(normalizedEmail);
+              }
+            }
+            
+            // 그래도 못 찾으면 유저네임만으로 시도 (fuzzy matching)
+            if (!adsPowerInfo) {
+              const username = EmailNormalizer.extractUsername(accountId);
+              if (username) {
+                adsPowerInfo = adsPowerMapping.get(username);
+              }
+            }
+          }
+          
+          tasks.push({
+            rowIndex: index + 2, // 시트에서의 실제 행 번호
+            email: accountId,
+            googleId: accountId,
+            password: password,
+            recoveryEmail: recoveryEmail,
+            totpSecret: totpCode, // TOTP Secret
+            status: status,
+            resumeDate: nextPaymentDate,
+            ip: ip,
+            result: result,
+            adsPowerId: adsPowerInfo?.adsPowerId || null,
+            adsPowerNumber: adsPowerInfo?.adsPowerNumber || null,
+            group: adsPowerInfo?.group || null,
+            hasMapping: !!adsPowerInfo,
+            normalizedEmail: EmailNormalizer.normalize(accountId)  // 정규화된 이메일도 저장
+          });
+        }
+      });
+
+      console.log(`[SimpleGoogleSheets] 재개 작업 ${tasks.length}개 로드 (매핑된 계정: ${tasks.filter(t => t.hasMapping).length}개)`);
+      return tasks;
+    } catch (error) {
+      console.warn('[SimpleGoogleSheets] 데이터 로드 실패:', error.message);
+      return this.getMockResumeData();
+    }
+  }
+
+  /**
+   * Mock 데이터
+   */
+  getMockResumeData() {
+    return [
+      {
+        rowIndex: 2,
+        email: 'test1@gmail.com',
+        googleId: 'test1@gmail.com',
+        adsPowerId: 'k11w7on9',
+        hasMapping: true,
+        status: '일시중지',
+        resumeDate: '2025-01-09'
+      },
+      {
+        rowIndex: 3,
+        email: 'test2@gmail.com',
+        googleId: 'test2@gmail.com',
+        adsPowerId: 'k123x8ms',
+        hasMapping: true,
+        status: '일시중지',
+        resumeDate: '2025-01-10'
+      }
+    ];
+  }
+
+  /**
+   * 상태 업데이트
+   */
+  async updateTaskStatus(rowIndex, status, result) {
+    try {
+      if (!this.sheets) {
+        console.log(`[Mock] 행 ${rowIndex} 상태 업데이트: ${status}`);
+        return;
+      }
+
+      // 실제 Google Sheets 업데이트
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `결제재개!E${rowIndex}:F${rowIndex}`, // E열: 처리상태, F열: 처리시간
+        valueInputOption: 'RAW',
+        resource: {
+          values: [[status, new Date().toISOString()]]
+        }
+      });
+    } catch (error) {
+      console.warn('[SimpleGoogleSheets] 상태 업데이트 실패:', error.message);
+    }
+  }
+
+  /**
+   * 일시중지 탭 데이터 가져오기
+   */
+  async getPauseTasksWithMapping() {
+    try {
+      if (!this.sheets) {
+        await this.initialize();
+      }
+
+      if (!this.sheets) {
+        // Mock 데이터 반환
+        return this.getMockPauseData();
+      }
+
+      // 1. 먼저 애즈파워현황 탭에서 매핑 정보 가져오기
+      const mappingResponse = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: '애즈파워현황!A2:D1000'
+      });
+      
+      const mappingRows = mappingResponse.data.values || [];
+      const adsPowerMapping = new Map();
+      
+      // 아이디 -> 애즈파워아이디 매핑 생성 (정규화 적용)
+      mappingRows.forEach(row => {
+        const accountId = row[3]; // D열: 아이디
+        const adsPowerId = row[1]; // B열: 애즈파워아이디
+        const adsPowerNumber = row[0]; // A열: 애즈파워번호
+        const group = row[2]; // C열: group
+        
+        if (accountId && adsPowerId) {
+          // 원본 이메일과 정규화된 이메일 모두 매핑
+          const normalizedEmail = EmailNormalizer.normalize(accountId);
+          const mappingData = {
+            adsPowerId: adsPowerId,
+            adsPowerNumber: adsPowerNumber,
+            group: group,
+            originalEmail: accountId  // 원본 이메일도 저장
+          };
+          
+          // 원본 이메일로 매핑
+          adsPowerMapping.set(accountId, mappingData);
+          
+          // 정규화된 이메일로도 매핑 (다를 경우에만)
+          if (normalizedEmail && normalizedEmail !== accountId.toLowerCase()) {
+            adsPowerMapping.set(normalizedEmail, mappingData);
+          }
+          
+          // 유저네임만으로도 매핑 (fuzzy matching용)
+          const username = EmailNormalizer.extractUsername(accountId);
+          if (username && !adsPowerMapping.has(username)) {
+            adsPowerMapping.set(username, mappingData);
+          }
+        }
+      });
+
+      // 2. 일시중지 탭 데이터 가져오기
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: '일시중지!A2:H1000' // 결제재개와 동일한 구조
+      });
+
+      const rows = response.data.values || [];
+      const tasks = [];
+
+      rows.forEach((row, index) => {
+        const accountId = row[0]; // A열: 아이디
+        const password = row[1];
+        const recoveryEmail = row[2];
+        const code = row[3];
+        const status = row[4] || '미확인';
+        const nextPaymentDate = row[5];
+        const ip = row[6];
+        const result = row[7];
+        
+        if (accountId) {
+          // 애즈파워 매핑 정보 찾기 (정규화된 이메일로 시도)
+          let adsPowerInfo = adsPowerMapping.get(accountId);
+          
+          // 원본으로 못 찾으면 정규화된 이메일로 시도
+          if (!adsPowerInfo) {
+            const normalizedEmail = EmailNormalizer.normalize(accountId);
+            if (normalizedEmail) {
+              adsPowerInfo = adsPowerMapping.get(normalizedEmail);
+            }
+          }
+          
+          // 그래도 못 찾으면 유저네임만으로 시도 (fuzzy matching)
+          if (!adsPowerInfo) {
+            const username = EmailNormalizer.extractUsername(accountId);
+            if (username) {
+              adsPowerInfo = adsPowerMapping.get(username);
+            }
+          }
+          
+          tasks.push({
+            rowIndex: index + 2,
+            email: accountId,
+            googleId: accountId,
+            password: password,
+            recoveryEmail: recoveryEmail,
+            code: code,
+            status: status,
+            pauseDate: nextPaymentDate,
+            ip: ip,
+            result: result,
+            adsPowerId: adsPowerInfo?.adsPowerId || null,
+            adsPowerNumber: adsPowerInfo?.adsPowerNumber || null,
+            group: adsPowerInfo?.group || null,
+            hasMapping: !!adsPowerInfo,
+            normalizedEmail: EmailNormalizer.normalize(accountId)  // 정규화된 이메일도 저장
+          });
+        }
+      });
+
+      console.log(`[SimpleGoogleSheets] 일시중지 작업 ${tasks.length}개 로드 (매핑된 계정: ${tasks.filter(t => t.hasMapping).length}개)`);
+      return tasks;
+    } catch (error) {
+      console.warn('[SimpleGoogleSheets] 일시중지 데이터 로드 실패:', error.message);
+      return this.getMockPauseData();
+    }
+  }
+
+  /**
+   * Mock 일시중지 데이터
+   */
+  getMockPauseData() {
+    return [
+      {
+        rowIndex: 2,
+        email: 'pause1@gmail.com',
+        googleId: 'pause1@gmail.com',
+        adsPowerId: 'k11w7on9',
+        hasMapping: true,
+        status: '결제중',
+        pauseDate: '2025-01-15'
+      }
+    ];
+  }
+
+  /**
+   * AdsPower 프로필 매핑 가져오기
+   */
+  async getAdsPowerProfiles() {
+    try {
+      if (!this.sheets) {
+        await this.initialize();
+      }
+
+      if (!this.sheets) {
+        return []; // Mock 모드에서는 빈 배열
+      }
+
+      // 애즈파워현황 탭에서 매핑 정보 가져오기
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: '애즈파워현황!A2:D1000' // A: 번호, B: 애즈파워아이디, C: group, D: 아이디
+      });
+
+      const rows = response.data.values || [];
+      const profiles = [];
+
+      rows.forEach((row, index) => {
+        const adsPowerNumber = row[0]; // A열: 애즈파워번호
+        const adsPowerId = row[1]; // B열: 애즈파워아이디
+        const group = row[2]; // C열: group
+        const accountId = row[3]; // D열: 아이디
+        
+        if (accountId && adsPowerId) {
+          profiles.push({
+            googleId: accountId,
+            email: accountId, // 아이디를 이메일로도 사용
+            group: group,
+            adsPowerId: adsPowerId,
+            adsPowerNumber: adsPowerNumber || (index + 1)
+          });
+        }
+      });
+
+      return profiles;
+    } catch (error) {
+      console.warn('[SimpleGoogleSheets] 프로필 매핑 로드 실패:', error.message);
+      return [];
+    }
+  }
+}
+
+module.exports = SimpleGoogleSheetsRepository;

@@ -1,0 +1,830 @@
+/**
+ * Google Login Helper Ultimate
+ * AdsPower 브라우저에서 클릭 문제를 해결한 최종 버전
+ */
+
+const chalk = require('chalk');
+const AdvancedClickHelper = require('./AdvancedClickHelper');
+
+class GoogleLoginHelperUltimate {
+  constructor(page, browserController, config = {}) {
+    this.page = page;
+    this.controller = browserController;
+    this.config = {
+      debugMode: config.debugMode || false,
+      screenshotEnabled: config.screenshotEnabled !== false,
+      maxRetries: config.maxRetries || 3,
+      ...config
+    };
+    
+    // Advanced Click Helper 초기화
+    this.clickHelper = new AdvancedClickHelper(page, {
+      debugMode: this.config.debugMode
+    });
+  }
+
+
+  /**
+   * 이메일 정규화 - 비교를 위한 표준화
+   */
+  normalizeEmail(email) {
+    if (!email) return '';
+    
+    // 기본 정규화
+    let normalized = email
+      .toLowerCase()           // 소문자 변환
+      .trim()                  // 앞뒤 공백 제거
+      .replace(/\s+/g, '')     // 모든 공백 제거
+      .replace(/[-._]/g, '');  // 구분자 제거 (Gmail은 . 과 - 를 무시)
+    
+    // @ 기호가 없으면 추가 (Gmail 기본 도메인)
+    if (!normalized.includes('@')) {
+      normalized = normalized + '@gmail.com';
+    }
+    
+    // Gmail의 + 기호 이후 제거 (alias)
+    if (normalized.includes('@gmail.com')) {
+      const parts = normalized.split('@');
+      if (parts.length === 2) {
+        const localPart = parts[0];
+        const domain = parts[1];
+        const cleanLocal = localPart.split('+')[0];
+        normalized = cleanLocal + '@' + domain;
+      }
+    }
+    
+    return normalized;
+  }
+
+  /**
+   * 두 이메일이 같은지 비교
+   */
+  isSameEmail(email1, email2) {
+    const norm1 = this.normalizeEmail(email1);
+    const norm2 = this.normalizeEmail(email2);
+    
+    if (this.config.debugMode) {
+      console.log(chalk.gray(`이메일 비교: "${email1}" -> "${norm1}" vs "${email2}" -> "${norm2}"`));
+    }
+    
+    return norm1 === norm2;
+  }
+  /**
+   * 프레임 준비 확인
+   */
+  async ensureFrameReady() {
+    try {
+      if (!this.page) {
+        throw new Error('Page object not available');
+      }
+
+      // 페이지가 닫혔는지 확인
+      try {
+        await this.page.evaluate(() => true);
+      } catch (error) {
+        if (error.message.includes('Session closed') || 
+            error.message.includes('Page has been closed')) {
+          throw new Error('Page has been closed');
+        }
+      }
+
+      await this.page.waitForTimeout(500);
+      
+      try {
+        await this.page.waitForFunction(
+          () => document.readyState === 'complete' || document.readyState === 'interactive',
+          { timeout: 5000 }
+        );
+      } catch (e) {
+        console.log(chalk.yellow('⚠️ DOM 로드 대기 시간 초과, 계속 진행'));
+      }
+
+      return true;
+    } catch (error) {
+      console.error(chalk.red('프레임 준비 확인 실패:'), error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * 안전한 evaluate 실행
+   */
+  async safeEvaluate(fn, ...args) {
+    try {
+      await this.ensureFrameReady();
+      return await this.page.evaluate(fn, ...args);
+    } catch (error) {
+      if (error.message.includes('Requesting main frame too early')) {
+        console.log(chalk.yellow('⚠️ 프레임 준비 대기 중...'));
+        await this.page.waitForTimeout(2000);
+        
+        try {
+          await this.ensureFrameReady();
+          return await this.page.evaluate(fn, ...args);
+        } catch (retryError) {
+          console.error(chalk.red('재시도 실패:'), retryError.message);
+          throw retryError;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 로그인 상태 확인
+   */
+  async checkLoginStatus() {
+    try {
+      await this.ensureFrameReady();
+      const currentUrl = this.page.url();
+      
+      const loginPagePatterns = [
+        'accounts.google.com/signin',
+        'accounts.google.com/v3/signin',
+        'accounts.google.com/ServiceLogin',
+        'accounts.google.com/identifier',
+        'accounts.google.com/accountchooser'
+      ];
+      
+      const isLoginPage = loginPagePatterns.some(pattern => 
+        currentUrl.includes(pattern)
+      );
+      
+      if (isLoginPage) {
+        if (this.config.debugMode) {
+          console.log(chalk.yellow('🔐 로그인이 필요한 상태입니다.'));
+        }
+        return false;
+      }
+      
+      if (currentUrl.includes('youtube.com')) {
+        const loginCheck = await this.safeEvaluate(() => {
+          const result = {
+            isLoggedIn: false,
+            indicators: []
+          };
+          
+          const avatarElements = document.querySelectorAll(
+            '#avatar-btn, button#avatar-btn, img.yt-img-shadow, ' +
+            'button[aria-label*="Account"], button[aria-label*="계정"]'
+          );
+          
+          if (avatarElements.length > 0) {
+            result.indicators.push('아바타 버튼 존재');
+          }
+          
+          const signInLinks = document.querySelectorAll(
+            'a[href*="accounts.google.com/ServiceLogin"], ' +
+            'a[aria-label*="Sign in"], a[aria-label*="로그인"]'
+          );
+          
+          if (signInLinks.length === 0) {
+            result.indicators.push('로그인 링크 없음');
+          }
+          
+          const pageText = document.body?.textContent || '';
+          const hasMembershipContent = 
+            pageText.includes('Manage membership') || 
+            pageText.includes('구독 관리') ||
+            pageText.includes('Premium');
+            
+          if (hasMembershipContent) {
+            result.indicators.push('멤버십 콘텐츠 존재');
+          }
+          
+          result.isLoggedIn = result.indicators.length >= 2;
+          
+          return result;
+        });
+        
+        if (this.config.debugMode) {
+          if (loginCheck.isLoggedIn) {
+            console.log(chalk.green('✅ 로그인 상태 확인됨'));
+            if (loginCheck.indicators.length > 0) {
+              console.log(chalk.gray('  근거: ' + loginCheck.indicators.join(', ')));
+            }
+          } else {
+            console.log(chalk.yellow('⚠️ 로그인되지 않음'));
+          }
+        }
+        
+        return loginCheck.isLoggedIn;
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error(chalk.red('로그인 상태 확인 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Google 계정으로 로그인
+   */
+  async login(credentials) {
+    if (!credentials || !credentials.email || !credentials.password) {
+      throw new Error('로그인 자격 증명이 없습니다.');
+    }
+    
+    console.log(chalk.blue(`\n🔐 Google 계정 로그인 시작: ${credentials.email}`));
+    
+    try {
+      await this.ensureFrameReady();
+      
+      const currentUrl = this.page.url();
+      console.log(chalk.gray(`현재 URL: ${currentUrl}`));
+      
+      // 이메일 입력 단계 처리
+      const emailStepCompleted = await this.handleEmailStep(credentials.email);
+      if (emailStepCompleted) {
+        console.log(chalk.green('✅ 이메일 단계 완료'));
+        
+        await this.page.waitForTimeout(3000);
+        
+        const hasRecaptcha = await this.checkForRecaptcha();
+        if (hasRecaptcha) {
+          console.log(chalk.yellow('⚠️ reCAPTCHA 감지됨 - 수동 인증 필요'));
+          return 'RECAPTCHA_DETECTED';
+        }
+      } else {
+        console.log(chalk.red('❌ 이메일 단계 실패'));
+        return false;
+      }
+      
+      // 비밀번호 입력 단계 처리
+      const passwordStepCompleted = await this.handlePasswordStep(credentials.password);
+      if (passwordStepCompleted) {
+        console.log(chalk.green('✅ 비밀번호 입력 완료'));
+        
+        await this.page.waitForTimeout(2000 + Math.random() * 1000);
+        
+        const hasRecaptcha = await this.checkForRecaptcha();
+        if (hasRecaptcha) {
+          console.log(chalk.yellow('⚠️ reCAPTCHA 감지됨 - 수동 인증 필요'));
+          return 'RECAPTCHA_DETECTED';
+        }
+      }
+      
+      await this.handle2FAIfNeeded(credentials);
+      await this.waitForLoginComplete();
+      
+      const loginSuccess = await this.checkLoginStatus();
+      
+      if (loginSuccess) {
+        console.log(chalk.green('✅ Google 로그인 성공'));
+        return true;
+      } else {
+        console.log(chalk.red('❌ Google 로그인 실패'));
+        return false;
+      }
+      
+    } catch (error) {
+      console.error(chalk.red('로그인 중 오류 발생:'), error.message);
+      
+      if (this.config.screenshotEnabled) {
+        try {
+          await this.page.screenshot({
+            path: `screenshots/login_error_${Date.now()}.png`
+          });
+        } catch (e) {
+          console.log(chalk.yellow('스크린샷 저장 실패'));
+        }
+      }
+      
+      return false;
+    }
+  }
+
+  /**
+   * 이메일 입력 단계 처리 (Ultimate 버전)
+   */
+  async handleEmailStep(email) {
+    try {
+      await this.ensureFrameReady();
+      await this.page.waitForTimeout(2000);
+      
+      const currentUrl = this.page.url();
+      console.log(chalk.gray(`이메일 단계 URL: ${currentUrl}`));
+      
+      // 계정 선택 페이지 처리
+      if (currentUrl.includes('accountchooser')) {
+        console.log(chalk.cyan('\n📋 계정 선택 페이지 처리'));
+        
+        // 1. 먼저 현재 계정이 목록에 있는지 확인
+        const existingAccountClicked = await this.selectExistingAccount(email);
+        
+        if (existingAccountClicked) {
+          console.log(chalk.green('✅ 기존 계정 선택 성공'));
+          
+          // 페이지 전환 대기
+          try {
+            await this.page.waitForNavigation({ 
+              waitUntil: 'domcontentloaded', 
+              timeout: 5000 
+            });
+          } catch (e) {
+            await this.page.waitForTimeout(3000);
+          }
+          
+          return true;
+        }
+        
+        // 2. 계정이 없으면 "다른 계정 사용" 클릭
+        console.log(chalk.yellow('계정이 목록에 없음, "다른 계정 사용" 클릭 시도'));
+        
+        // 가능한 모든 선택자
+        const addAccountSelectors = [
+          'div[jsname="rwl3qc"]',
+          'div[data-identifier=""]',
+          'li[jsname="XraQ3b"]',
+          'div[role="link"]:last-child',
+          'li:last-child',
+          'div:contains("Use another account")',
+          'div:contains("다른 계정 사용")',
+          'button:contains("Add account")',
+          'button:contains("계정 추가")'
+        ];
+        
+        let addAccountClicked = false;
+        
+        for (const selector of addAccountSelectors) {
+          const clicked = await this.clickHelper.clickElement(selector);
+          if (clicked) {
+            addAccountClicked = true;
+            console.log(chalk.green(`✅ "다른 계정 사용" 클릭 성공: ${selector}`));
+            break;
+          }
+        }
+        
+        // 3. 선택자로 못 찾으면 텍스트로 찾기
+        if (!addAccountClicked) {
+          console.log(chalk.yellow('선택자로 못 찾음, 텍스트로 검색'));
+          
+          const textClicked = await this.clickByText(['Use another account', '다른 계정 사용', 'Add account', '계정 추가']);
+          if (textClicked) {
+            addAccountClicked = true;
+            console.log(chalk.green('✅ 텍스트로 "다른 계정 사용" 클릭 성공'));
+          }
+        }
+        
+        if (!addAccountClicked) {
+          console.log(chalk.red('❌ "다른 계정 사용" 버튼을 클릭할 수 없음'));
+          
+          // 디버그: 페이지의 모든 클릭 가능한 요소 출력
+          if (this.config.debugMode) {
+            await this.debugClickableElements();
+          }
+          
+          return false;
+        }
+        
+        // 페이지 전환 대기
+        await this.page.waitForTimeout(3000);
+      }
+      
+      // 이메일 입력 필드 찾기 및 입력
+      const emailInputSuccess = await this.enterEmail(email);
+      
+      if (!emailInputSuccess) {
+        console.log(chalk.red('❌ 이메일 입력 실패'));
+        return false;
+      }
+      
+      // 다음 버튼 클릭
+      const nextButtonClicked = await this.clickNextButton();
+      
+      if (!nextButtonClicked) {
+        console.log(chalk.gray('Enter 키로 진행'));
+        await this.page.keyboard.press('Enter');
+      }
+      
+      await this.page.waitForTimeout(3000);
+      
+      return true;
+      
+    } catch (error) {
+      console.error(chalk.red('이메일 입력 단계 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 기존 계정 선택
+   */
+  async selectExistingAccount(targetEmail) {
+    try {
+      // data-identifier 속성으로 찾기
+      const accountSelector = `div[data-identifier="${targetEmail}"]`;
+      const accountElement = await this.page.$(accountSelector);
+      
+      if (accountElement) {
+        console.log(chalk.gray(`계정 발견: ${targetEmail}`));
+        
+        const clicked = await this.clickHelper.clickElement(accountSelector);
+        if (clicked) {
+          return true;
+        }
+      }
+      
+      // 텍스트로 찾기
+      const elements = await this.page.$$('div[role="link"], li[role="presentation"]');
+      
+      for (const element of elements) {
+        const text = await element.evaluate(el => el.textContent);
+        
+        if (text && text.includes(targetEmail)) {
+          console.log(chalk.gray(`텍스트로 계정 발견: ${targetEmail}`));
+          
+          // AdvancedClickHelper 사용
+          const clicked = await this.clickHelper.clickElement(element);
+          if (clicked) {
+            return true;
+          }
+        }
+      }
+      
+      return false;
+      
+    } catch (error) {
+      console.error(chalk.red('계정 선택 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 텍스트로 요소 찾아서 클릭
+   */
+  async clickByText(textArray) {
+    try {
+      const elements = await this.page.$$('div, li, button, a');
+      
+      for (const element of elements) {
+        const text = await element.evaluate(el => el.textContent?.trim());
+        
+        if (text) {
+          for (const searchText of textArray) {
+            if (text.includes(searchText)) {
+              console.log(chalk.gray(`텍스트 발견: "${searchText}"`));
+              
+              // element handle을 selector로 변환할 수 없으므로 직접 클릭
+              const box = await element.boundingBox();
+              if (box) {
+                // CDP 클릭 시도
+                const client = await this.page.target().createCDPSession();
+                
+                try {
+                  const x = box.x + box.width / 2;
+                  const y = box.y + box.height / 2;
+                  
+                  await client.send('Input.dispatchMouseEvent', {
+                    type: 'mousePressed',
+                    x: x,
+                    y: y,
+                    button: 'left',
+                    clickCount: 1
+                  });
+                  
+                  await this.page.waitForTimeout(50);
+                  
+                  await client.send('Input.dispatchMouseEvent', {
+                    type: 'mouseReleased',
+                    x: x,
+                    y: y,
+                    button: 'left',
+                    clickCount: 1
+                  });
+                  
+                  return true;
+                  
+                } finally {
+                  await client.detach();
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      return false;
+      
+    } catch (error) {
+      console.error(chalk.red('텍스트 클릭 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 디버그: 클릭 가능한 요소들 출력
+   */
+  async debugClickableElements() {
+    try {
+      const clickableElements = await this.safeEvaluate(() => {
+        const elements = [];
+        const all = document.querySelectorAll('div[role="link"], li[role="presentation"], button, a');
+        
+        for (const el of all) {
+          const rect = el.getBoundingClientRect();
+          const text = el.textContent?.trim().substring(0, 50);
+          
+          if (rect.width > 0 && rect.height > 0 && text) {
+            elements.push({
+              tag: el.tagName,
+              text: text,
+              role: el.getAttribute('role'),
+              jsname: el.getAttribute('jsname'),
+              dataIdentifier: el.getAttribute('data-identifier'),
+              visible: el.offsetParent !== null
+            });
+          }
+        }
+        
+        return elements;
+      });
+      
+      console.log(chalk.cyan('\n📋 클릭 가능한 요소들:'));
+      clickableElements.forEach((el, index) => {
+        console.log(chalk.gray(`  ${index + 1}. ${el.tag} - "${el.text}"`));
+        if (el.role) console.log(chalk.gray(`     role: ${el.role}`));
+        if (el.jsname) console.log(chalk.gray(`     jsname: ${el.jsname}`));
+        if (el.dataIdentifier) console.log(chalk.gray(`     data-identifier: ${el.dataIdentifier}`));
+      });
+      
+    } catch (error) {
+      console.error(chalk.red('디버그 실패:'), error.message);
+    }
+  }
+
+  /**
+   * 이메일 입력
+   */
+  async enterEmail(email) {
+    try {
+      const emailSelectors = [
+        'input[type="email"]',
+        'input#identifierId',
+        'input[name="identifier"]',
+        'input[autocomplete="username"]'
+      ];
+      
+      for (const selector of emailSelectors) {
+        try {
+          const element = await this.page.waitForSelector(selector, { 
+            visible: true, 
+            timeout: 3000 
+          });
+          
+          if (element) {
+            console.log(chalk.gray(`이메일 필드 발견: ${selector}`));
+            
+            await element.click();
+            await this.page.waitForTimeout(300);
+            
+            await this.page.keyboard.down('Control');
+            await this.page.keyboard.press('a');
+            await this.page.keyboard.up('Control');
+            await this.page.waitForTimeout(100);
+            
+            await this.page.type(selector, email, { delay: 50 });
+            
+            console.log(chalk.green('✅ 이메일 입력 완료'));
+            return true;
+          }
+        } catch (e) {
+          // 다음 선택자 시도
+        }
+      }
+      
+      console.log(chalk.yellow('이메일 입력 필드를 찾을 수 없음'));
+      return false;
+      
+    } catch (error) {
+      console.error(chalk.red('이메일 입력 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 다음 버튼 클릭
+   */
+  async clickNextButton() {
+    const buttonSelectors = [
+      'button#identifierNext',
+      'div#identifierNext button',
+      'div#identifierNext',
+      'button[jsname="LgbsSe"]'
+    ];
+    
+    for (const selector of buttonSelectors) {
+      const clicked = await this.clickHelper.clickElement(selector);
+      if (clicked) {
+        console.log(chalk.green('✅ 다음 버튼 클릭 성공'));
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * 비밀번호 입력 단계 처리
+   */
+  async handlePasswordStep(password) {
+    try {
+      await this.ensureFrameReady();
+      await this.page.waitForTimeout(2000);
+      
+      const currentUrl = this.page.url();
+      console.log(chalk.gray(`비밀번호 단계 URL: ${currentUrl}`));
+      
+      if (!currentUrl.includes('pwd') && !currentUrl.includes('challenge') && !currentUrl.includes('password')) {
+        console.log(chalk.yellow('비밀번호 페이지 대기...'));
+        
+        try {
+          await this.page.waitForFunction(
+            () => window.location.href.includes('pwd') || 
+                  window.location.href.includes('challenge') ||
+                  window.location.href.includes('password'),
+            { timeout: 5000 }
+          );
+        } catch (e) {
+          console.log(chalk.yellow('비밀번호 페이지 전환 타임아웃'));
+        }
+      }
+      
+      const passwordSelectors = [
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[name="Passwd"]',
+        'input[autocomplete="current-password"]'
+      ];
+      
+      let passwordEntered = false;
+      
+      for (const selector of passwordSelectors) {
+        try {
+          const element = await this.page.waitForSelector(selector, { 
+            visible: true, 
+            timeout: 2000 
+          });
+          
+          if (element) {
+            console.log(chalk.gray(`비밀번호 필드 발견: ${selector}`));
+            
+            await element.click();
+            await this.page.waitForTimeout(300);
+            
+            await this.page.type(selector, password, { delay: 50 });
+            
+            passwordEntered = true;
+            console.log(chalk.green('✅ 비밀번호 입력 완료'));
+            break;
+          }
+        } catch (e) {
+          // 다음 선택자 시도
+        }
+      }
+      
+      if (!passwordEntered) {
+        console.log(chalk.red('❌ 비밀번호 입력 필드를 찾을 수 없음'));
+        return false;
+      }
+      
+      const loginButtonSelectors = [
+        'button#passwordNext',
+        'div#passwordNext button',
+        'div#passwordNext',
+        'button[jsname="LgbsSe"]'
+      ];
+      
+      let buttonClicked = false;
+      
+      for (const selector of loginButtonSelectors) {
+        const clicked = await this.clickHelper.clickElement(selector);
+        if (clicked) {
+          buttonClicked = true;
+          console.log(chalk.green('✅ 로그인 버튼 클릭 성공'));
+          break;
+        }
+      }
+      
+      if (!buttonClicked) {
+        await this.page.keyboard.press('Enter');
+        console.log(chalk.gray('Enter 키로 진행'));
+      }
+      
+      await this.page.waitForTimeout(3000);
+      
+      return true;
+      
+    } catch (error) {
+      console.error(chalk.red('비밀번호 입력 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 2단계 인증 처리
+   */
+  async handle2FAIfNeeded(credentials) {
+    try {
+      await this.ensureFrameReady();
+      await this.page.waitForTimeout(2000);
+      
+      const is2FAPage = await this.safeEvaluate(() => {
+        const pageText = document.body?.innerText?.toLowerCase() || '';
+        return pageText.includes('2-step verification') || 
+               pageText.includes('2단계 인증') ||
+               pageText.includes('verify it\'s you') ||
+               pageText.includes('본인 확인');
+      });
+      
+      if (!is2FAPage) {
+        return true;
+      }
+      
+      console.log(chalk.yellow('📱 2단계 인증이 필요합니다.'));
+      
+      const tryAnotherWay = await this.clickByText(['Try another way', '다른 방법 시도']);
+      
+      if (tryAnotherWay) {
+        console.log(chalk.gray('다른 인증 방법 선택 페이지로 이동'));
+        await this.page.waitForTimeout(2000);
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error(chalk.red('2단계 인증 처리 실패:'), error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 로그인 완료 대기
+   */
+  async waitForLoginComplete() {
+    try {
+      await this.page.waitForFunction(
+        () => {
+          const url = window.location.href;
+          return url.includes('youtube.com') && 
+                 !url.includes('accounts.google.com');
+        },
+        { timeout: 30000 }
+      );
+      
+      await this.page.waitForFunction(
+        () => document.readyState === 'complete',
+        { timeout: 10000 }
+      );
+      
+      await this.page.waitForTimeout(2000);
+      
+      return true;
+      
+    } catch (error) {
+      console.log(chalk.yellow('로그인 완료 대기 시간 초과'));
+      return false;
+    }
+  }
+  
+  /**
+   * reCAPTCHA 존재 확인
+   */
+  async checkForRecaptcha() {
+    try {
+      await this.ensureFrameReady();
+      const currentUrl = this.page.url();
+      
+      if (currentUrl.includes('challenge/recaptcha') || 
+          currentUrl.includes('signin/v2/challenge') ||
+          currentUrl.includes('challengeselection')) {
+        return true;
+      }
+      
+      const hasRecaptcha = await this.safeEvaluate(() => {
+        const recaptchaFrame = document.querySelector('iframe[src*="recaptcha"]');
+        if (recaptchaFrame) return true;
+        
+        const pageText = document.body?.innerText?.toLowerCase() || '';
+        const recaptchaIndicators = [
+          'recaptcha',
+          'i\'m not a robot',
+          '로봇이 아닙니다',
+          '비정상적인 활동'
+        ];
+        
+        return recaptchaIndicators.some(text => pageText.includes(text));
+      });
+      
+      return hasRecaptcha;
+      
+    } catch (error) {
+      console.error(chalk.red('reCAPTCHA 확인 중 오류:'), error.message);
+      return false;
+    }
+  }
+}
+
+module.exports = GoogleLoginHelperUltimate;

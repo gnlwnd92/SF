@@ -1,0 +1,688 @@
+/**
+ * Google Sheets 일시중지 탭 관리 Repository
+ */
+
+const { google } = require('googleapis');
+const path = require('path');
+const fs = require('fs').promises;
+const axios = require('axios');
+
+class PauseSheetRepository {
+  constructor() {
+    this.auth = null;
+    this.sheets = null;
+    this.spreadsheetId = null;
+    this.pauseSheetName = '일시중지'; // 일시중지 탭 이름
+    this.resumeSheetName = '결제재개'; // 결제재개 탭 이름
+  }
+
+  /**
+   * IP 주소 가져오기
+   */
+  async getIPAddress() {
+    try {
+      const response = await axios.get('https://api.ipify.org?format=json', {
+        timeout: 5000
+      });
+      return response.data.ip;
+    } catch (error) {
+      console.log('[PauseSheetRepository] IP 주소 확인 실패');
+      return 'Unknown';
+    }
+  }
+
+  /**
+   * 날짜 파싱 (다양한 형식 지원)
+   */
+  parseDate(dateStr) {
+    if (!dateStr) return '';
+    
+    // 이미 올바른 형식인 경우
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return dateStr;
+    }
+    
+    const months = {
+      'january': '01', 'jan': '01',
+      'february': '02', 'feb': '02',
+      'march': '03', 'mar': '03',
+      'april': '04', 'apr': '04',
+      'may': '05',
+      'june': '06', 'jun': '06',
+      'july': '07', 'jul': '07',
+      'august': '08', 'aug': '08',
+      'september': '09', 'sep': '09', 'sept': '09',
+      'october': '10', 'oct': '10',
+      'november': '11', 'nov': '11',
+      'december': '12', 'dec': '12'
+    };
+    
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    
+    // "Sep 11" 형식
+    const match1 = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2})$/i);
+    if (match1) {
+      const monthName = match1[1].toLowerCase();
+      const day = match1[2].padStart(2, '0');
+      const month = months[monthName];
+      
+      if (month) {
+        const monthNum = parseInt(month);
+        let year = currentYear;
+        if (monthNum < currentMonth) {
+          year = currentYear + 1;
+        }
+        console.log(`[PauseSheetRepository] 날짜 파싱: ${dateStr} → ${year}-${month}-${day}`);
+        return `${year}-${month}-${day}`;
+      }
+    }
+    
+    // 파싱 실패 시 원본 반환
+    return dateStr;
+  }
+
+  /**
+   * 결제재개용 날짜 파싱 (YYYY. M. D 형식으로 반환)
+   */
+  parseDateForResume(dateStr) {
+    if (!dateStr) return '';
+    
+    // 이미 "YYYY. M. D" 형식인 경우
+    if (/^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}$/.test(dateStr)) {
+      return dateStr;
+    }
+    
+    // "YYYY-MM-DD" 형식을 "YYYY. M. D" 형식으로 변환
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const [year, month, day] = dateStr.split('-');
+      return `${year}. ${parseInt(month)}. ${parseInt(day)}`;
+    }
+    
+    const months = {
+      'january': 1, 'jan': 1,
+      'february': 2, 'feb': 2,
+      'march': 3, 'mar': 3,
+      'april': 4, 'apr': 4,
+      'may': 5,
+      'june': 6, 'jun': 6,
+      'july': 7, 'jul': 7,
+      'august': 8, 'aug': 8,
+      'september': 9, 'sep': 9, 'sept': 9,
+      'october': 10, 'oct': 10,
+      'november': 11, 'nov': 11,
+      'december': 12, 'dec': 12
+    };
+    
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    
+    // "Sep 11" 형식
+    const match1 = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2})$/i);
+    if (match1) {
+      const monthName = match1[1].toLowerCase();
+      const day = parseInt(match1[2]);
+      const month = months[monthName];
+      
+      if (month) {
+        let year = currentYear;
+        if (month < currentMonth) {
+          year = currentYear + 1;
+        }
+        console.log(`[PauseSheetRepository] 결제재개 날짜 파싱: ${dateStr} → ${year}. ${month}. ${day}`);
+        return `${year}. ${month}. ${day}`;
+      }
+    }
+    
+    // "2025-08-18" 형식도 시도
+    const match2 = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (match2) {
+      const year = match2[1];
+      const month = parseInt(match2[2]);
+      const day = parseInt(match2[3]);
+      return `${year}. ${month}. ${day}`;
+    }
+    
+    // 파싱 실패 시 원본 반환
+    return dateStr;
+  }
+
+  /**
+   * 프로필의 현재 행 찾기 (이메일 또는 프로필 ID로 검색)
+   */
+  async findProfileRow(identifier) {
+    try {
+      // 일시중지 탭의 모든 데이터 가져오기
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.pauseSheetName}!A:Z`
+      });
+
+      const rows = response.data.values || [];
+      
+      // 헤더 행 찾기 (첫 번째 행이 헤더)
+      if (rows.length === 0) return null;
+      
+      const headers = rows[0];
+      
+      // 이메일 컬럼과 프로필 ID 컬럼 인덱스 찾기
+      const emailColIndex = headers.findIndex(h => 
+        h && (h.includes('이메일') || h.includes('Email') || h.includes('ID') || h === 'id')
+      );
+      const profileColIndex = headers.findIndex(h => 
+        h && (h.includes('프로필') || h.includes('Profile') || h.includes('AdsPower'))
+      );
+      
+      // identifier가 이메일인지 프로필 ID인지 판별
+      const isEmail = identifier.includes('@');
+      
+      // 행 찾기
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        
+        if (isEmail) {
+          // 이메일로 검색
+          if (emailColIndex !== -1 && row[emailColIndex] === identifier) {
+            return {
+              rowIndex: i + 1, // 1-based index for Sheets API
+              rowData: row,
+              headers: headers
+            };
+          }
+        } else {
+          // 프로필 ID로 검색
+          if (profileColIndex !== -1 && row[profileColIndex] === identifier) {
+            return {
+              rowIndex: i + 1,
+              rowData: row,
+              headers: headers
+            };
+          }
+        }
+        
+        // 모든 컬럼에서 검색 (fallback)
+        for (let j = 0; j < row.length; j++) {
+          if (row[j] === identifier) {
+            return {
+              rowIndex: i + 1,
+              rowData: row,
+              headers: headers
+            };
+          }
+        }
+      }
+      
+      console.log(`[PauseSheetRepository] ⚠️ ${identifier}를 시트에서 찾을 수 없습니다.`);
+      console.log(`[PauseSheetRepository] 검색 시도: ${isEmail ? '이메일' : '프로필ID'} 컬럼`);
+      console.log(`[PauseSheetRepository] 이메일 컬럼 인덱스: ${emailColIndex}, 프로필 컬럼 인덱스: ${profileColIndex}`);
+      if (rows.length > 1) {
+        console.log(`[PauseSheetRepository] 시트의 첫 5개 행 (디버깅용):`);
+        for (let i = 1; i < Math.min(6, rows.length); i++) {
+          console.log(`  행 ${i}: 이메일=${rows[i][emailColIndex] || 'N/A'}, 프로필=${rows[i][profileColIndex] || 'N/A'}`);
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error('프로필 행 검색 실패:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Google Sheets 인증 초기화
+   */
+  async initialize() {
+    try {
+      // 서비스 계정 키 파일 경로 - 여러 위치 시도 (__dirname 기반)
+      const baseDir = path.resolve(__dirname, '..', '..', '..');
+      const possiblePaths = [
+        path.join(__dirname, '../../config/youtube-automation-439913-b1c8dfe38d92.json'),
+        path.join(baseDir, 'credentials', 'service-account.json'),
+        path.join(baseDir, 'service_account.json'),
+        path.join(baseDir, '..', 'service_account.json'),
+        path.join(baseDir, '..', '..', 'service_account.json')
+      ];
+      
+      let keyFile = null;
+      let keyPath = null;
+      
+      for (const testPath of possiblePaths) {
+        try {
+          keyFile = await fs.readFile(testPath, 'utf8');
+          keyPath = testPath;
+          console.log(`✅ 서비스 계정 키 파일 로드: ${keyPath}`);
+          break;
+        } catch (e) {
+          // 다음 경로 시도
+        }
+      }
+      
+      if (!keyFile) {
+        throw new Error('서비스 계정 키 파일을 찾을 수 없습니다');
+      }
+      
+      const key = JSON.parse(keyFile);
+
+      // JWT 클라이언트 생성
+      this.auth = new google.auth.JWT(
+        key.client_email,
+        null,
+        key.private_key,
+        ['https://www.googleapis.com/auth/spreadsheets']
+      );
+
+      // 인증
+      await this.auth.authorize();
+      
+      // Sheets API 클라이언트 생성
+      this.sheets = google.sheets({ version: 'v4', auth: this.auth });
+      
+      // 스프레드시트 ID 설정 (환경변수 또는 설정 파일에서 읽기)
+      this.spreadsheetId = process.env.GOOGLE_SHEET_ID || '1TlfNvqanGr0FRR9j1FLBijR2-8HUKqUqK3FMnhx5HaM';
+      
+      console.log('✅ Google Sheets 연결 성공');
+      return true;
+    } catch (error) {
+      console.error('❌ Google Sheets 연결 실패:', error.message);
+      return false;
+    }
+  }
+
+
+  /**
+   * 일시중지 정보 업데이트 (이메일 또는 프로필 ID로)
+   */
+  async updatePauseStatus(identifier, pauseData) {
+    try {
+      // 이메일 또는 프로필 ID로 행 찾기
+      const profileRow = await this.findProfileRow(identifier);
+      
+      if (!profileRow) {
+        console.log(`[PauseSheetRepository] 프로필 ${identifier}를 시트에서 찾을 수 없습니다.`);
+        console.log(`[PauseSheetRepository] 검색 타입: ${identifier.includes('@') ? '이메일' : '프로필ID'}`);
+        return false;
+      }
+
+      const { rowIndex, headers } = profileRow;
+      
+      // 컬럼 인덱스 찾기
+      const findColumnIndex = (columnNames) => {
+        for (const name of columnNames) {
+          const index = headers.findIndex(h => h && h.includes(name));
+          if (index !== -1) return index;
+        }
+        return -1;
+      };
+
+      // 각 필드의 컬럼 인덱스 찾기
+      const statusCol = findColumnIndex(['상태', 'Status', '상태(Status)']);
+      const nextBillingCol = findColumnIndex(['다음 결제일', 'Next Billing', '다음결제일']);
+      const resultCol = findColumnIndex(['결과', 'Result', '처리결과']);
+      const lastUpdateCol = findColumnIndex(['최종 업데이트', 'Last Update', '업데이트일시']);
+      const noteCol = findColumnIndex(['비고', 'Note', '메모']);
+      const ipCol = findColumnIndex(['IP', 'IP주소', 'IP Address']);
+
+      // IP 주소 자동 가져오기 (pauseData에 없으면)
+      if (!pauseData.ipAddress && ipCol !== -1) {
+        pauseData.ipAddress = await this.getIPAddress();
+      }
+
+      // 업데이트할 데이터 준비
+      const updateData = [];
+      
+      if (statusCol !== -1) {
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(statusCol)}${rowIndex}`,
+          values: [[pauseData.status || '일시중지']]
+        });
+      }
+
+      if (nextBillingCol !== -1 && pauseData.nextBillingDate) {
+        // 날짜 파싱
+        const parsedDate = this.parseDate(pauseData.nextBillingDate);
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(nextBillingCol)}${rowIndex}`,
+          values: [[parsedDate]]
+        });
+      }
+
+      if (resultCol !== -1) {
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(resultCol)}${rowIndex}`,
+          values: [[pauseData.result || '성공']]
+        });
+      }
+
+      if (lastUpdateCol !== -1) {
+        const now = new Date();
+        const timestamp = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(lastUpdateCol)}${rowIndex}`,
+          values: [[timestamp]]
+        });
+      }
+
+      if (noteCol !== -1 && pauseData.note) {
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(noteCol)}${rowIndex}`,
+          values: [[pauseData.note]]
+        });
+      }
+      
+      if (ipCol !== -1 && pauseData.ipAddress) {
+        updateData.push({
+          range: `${this.pauseSheetName}!${this.columnToLetter(ipCol)}${rowIndex}`,
+          values: [[pauseData.ipAddress]]
+        });
+      }
+
+      // 배치 업데이트 실행
+      if (updateData.length > 0) {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: this.spreadsheetId,
+          resource: {
+            valueInputOption: 'USER_ENTERED',
+            data: updateData
+          }
+        });
+
+        const parsedDate = pauseData.nextBillingDate ? this.parseDate(pauseData.nextBillingDate) : null;
+        console.log(`[PauseSheetRepository] ✅ ${identifier.includes('@') ? '이메일' : '프로필'} ${identifier} 시트 업데이트 완료`);
+        console.log(`[PauseSheetRepository] 업데이트 항목: 상태=${pauseData.status || '일시중지'}, 날짜=${parsedDate || '-'}, IP=${pauseData.ipAddress || '-'}`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('시트 업데이트 실패:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 결제재개 상태 업데이트
+   * @param {string} identifier - 프로필 식별자 (이메일 또는 프로필 ID)
+   * @param {object} resumeData - 업데이트할 재개 데이터
+   * @returns {boolean} - 성공 여부
+   */
+  async updateResumeStatus(identifier, resumeData) {
+    try {
+      // 결제재개 시트에서 행 찾기
+      let profileRow = await this.findProfileRowInSheet(identifier, this.resumeSheetName);
+      let useResumeSheet = true;
+      
+      if (!profileRow) {
+        console.log(`[PauseSheetRepository] 프로필 ${identifier}를 결제재개 시트에서 찾을 수 없습니다.`);
+        console.log(`[PauseSheetRepository] 일시중지 시트에서 검색을 시도합니다...`);
+        
+        // 결제재개 시트에 없으면 일시중지 시트에서 찾기 (fallback)
+        profileRow = await this.findProfileRowInSheet(identifier, this.pauseSheetName);
+        useResumeSheet = false;
+        
+        if (!profileRow) {
+          console.log(`[PauseSheetRepository] 프로필 ${identifier}를 모든 시트에서 찾을 수 없습니다.`);
+          console.log(`[PauseSheetRepository] 검색 타입: ${identifier.includes('@') ? '이메일' : '프로필ID'}`);
+          return false;
+        } else {
+          console.log(`[PauseSheetRepository] ✅ 일시중지 시트에서 프로필 ${identifier}를 찾았습니다.`);
+        }
+      } else {
+        console.log(`[PauseSheetRepository] ✅ 결제재개 시트에서 프로필 ${identifier}를 찾았습니다.`);
+      }
+
+      const { rowIndex, headers } = profileRow;
+      
+      // 컬럼 인덱스 찾기
+      const findColumnIndex = (columnNames) => {
+        for (const name of columnNames) {
+          const index = headers.findIndex(h => h && h.includes(name));
+          if (index !== -1) return index;
+        }
+        return -1;
+      };
+
+      // 각 필드의 컬럼 인덱스 찾기 (결제재개 탭: 아이디, 비밀번호, 복구이메일, 코드, 상태, 다음결제일, IP, 결과)
+      const statusCol = findColumnIndex(['상태', 'Status']);
+      const nextBillingCol = findColumnIndex(['다음결제일', 'Next Billing', '다음 결제일']);
+      const resultCol = findColumnIndex(['결과', 'Result']);
+      const ipCol = findColumnIndex(['IP', 'IP주소', 'IP Address']);
+
+      // IP 주소 자동 가져오기 (resumeData에 없으면)
+      if (!resumeData.ipAddress && ipCol !== -1) {
+        resumeData.ipAddress = await this.getIPAddress();
+      }
+
+      // 업데이트할 데이터 준비
+      const updateData = [];
+      const targetSheetName = useResumeSheet ? this.resumeSheetName : this.pauseSheetName;
+      
+      // 상태 업데이트 (resumeData.status가 명시적으로 제공된 경우에만)
+      console.log(`[PauseSheetRepository] 상태 업데이트 확인: statusCol=${statusCol}, resumeData.status=${resumeData.status}, undefined 체크=${resumeData.status !== undefined}`);
+      if (statusCol !== -1 && resumeData.status !== undefined) {
+        console.log(`[PauseSheetRepository] ✅ 상태 업데이트 예정: "${resumeData.status}" → ${targetSheetName}!${this.columnToLetter(statusCol)}${rowIndex}`);
+        updateData.push({
+          range: `${targetSheetName}!${this.columnToLetter(statusCol)}${rowIndex}`,
+          values: [[resumeData.status]]
+        });
+      } else {
+        console.log(`[PauseSheetRepository] ⚠️ 상태 업데이트 건너뜀: statusCol=${statusCol}, status=${resumeData.status}`);
+      }
+
+      if (nextBillingCol !== -1 && resumeData.nextBillingDate) {
+        // 결제재개용 날짜 파싱 (YYYY. M. D 형식)
+        const parsedDate = this.parseDateForResume(resumeData.nextBillingDate);
+        updateData.push({
+          range: `${targetSheetName}!${this.columnToLetter(nextBillingCol)}${rowIndex}`,
+          values: [[parsedDate]]
+        });
+      }
+
+      if (resultCol !== -1) {
+        const timestamp = new Date().toLocaleString('ko-KR');
+        const resultWithTimestamp = `${resumeData.result || '재개 성공'} (${timestamp})`;
+        updateData.push({
+          range: `${targetSheetName}!${this.columnToLetter(resultCol)}${rowIndex}`,
+          values: [[resultWithTimestamp]]
+        });
+      }
+      
+      if (ipCol !== -1 && resumeData.ipAddress) {
+        updateData.push({
+          range: `${targetSheetName}!${this.columnToLetter(ipCol)}${rowIndex}`,
+          values: [[resumeData.ipAddress]]
+        });
+      }
+
+      // 배치 업데이트 실행
+      if (updateData.length > 0) {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: this.spreadsheetId,
+          resource: {
+            valueInputOption: 'USER_ENTERED',
+            data: updateData
+          }
+        });
+
+        const parsedDate = resumeData.nextBillingDate ? this.parseDateForResume(resumeData.nextBillingDate) : null;
+        console.log(`[PauseSheetRepository] ✅ ${identifier.includes('@') ? '이메일' : '프로필'} ${identifier} ${targetSheetName} 시트 업데이트 완료`);
+        
+        // 업데이트된 항목들 로그
+        const updatedItems = [];
+        if (resumeData.status !== undefined) updatedItems.push(`상태=${resumeData.status}`);
+        if (parsedDate) updatedItems.push(`날짜=${parsedDate}`);
+        if (resumeData.ipAddress) updatedItems.push(`IP=${resumeData.ipAddress}`);
+        if (resumeData.result) updatedItems.push(`결과=${resumeData.result}`);
+        
+        console.log(`[PauseSheetRepository] 업데이트 항목: ${updatedItems.join(', ')}`);
+        console.log(`[PauseSheetRepository] 사용된 시트: ${targetSheetName} (${useResumeSheet ? '결제재개 시트' : '일시중지 시트 fallback'})`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('결제재개 시트 업데이트 실패:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 특정 시트에서 프로필 행 찾기
+   * @param {string} identifier - 프로필 식별자
+   * @param {string} sheetName - 시트 이름
+   * @returns {object|null} - 찾은 행 정보
+   */
+  async findProfileRowInSheet(identifier, sheetName) {
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!A:Z`
+      });
+
+      const rows = response.data.values;
+      if (!rows || rows.length < 2) {
+        return null;
+      }
+
+      const headers = rows[0];
+      
+      // 아이디 컬럼 찾기 (첫 번째 컬럼이거나 '아이디' 포함)
+      const idColumnIndex = headers.findIndex(h => 
+        h && (h.includes('아이디') || h.includes('ID') || h.includes('이메일') || h.includes('Email'))
+      ) || 0;
+
+      // 프로필 찾기
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row && row[idColumnIndex]) {
+          const cellValue = row[idColumnIndex].toString().trim();
+          
+          // 이메일로 검색
+          if (identifier.includes('@') && cellValue.includes('@')) {
+            if (cellValue === identifier) {
+              return {
+                rowIndex: i + 1,
+                rowData: row,
+                headers: headers
+              };
+            }
+          }
+          // 프로필 ID로 검색 (숫자)
+          else if (!identifier.includes('@') && !cellValue.includes('@')) {
+            if (cellValue === identifier) {
+              return {
+                rowIndex: i + 1,
+                rowData: row,
+                headers: headers
+              };
+            }
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error(`${sheetName} 시트에서 프로필 검색 실패:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 숫자를 알파벳 컬럼으로 변환 (0 -> A, 1 -> B, ...)
+   */
+  columnToLetter(column) {
+    let temp;
+    let letter = '';
+    while (column >= 0) {
+      temp = column % 26;
+      letter = String.fromCharCode(temp + 65) + letter;
+      column = Math.floor(column / 26) - 1;
+    }
+    return letter;
+  }
+
+  /**
+   * 프로필 정보 가져오기
+   */
+  async getProfileInfo(profileId) {
+    try {
+      const profileRow = await this.findProfileRow(profileId);
+      
+      if (!profileRow) {
+        return null;
+      }
+
+      const { rowData, headers } = profileRow;
+      
+      // 헤더를 기반으로 객체 생성
+      const profileInfo = {};
+      headers.forEach((header, index) => {
+        if (header && rowData[index]) {
+          profileInfo[header] = rowData[index];
+        }
+      });
+
+      return profileInfo;
+    } catch (error) {
+      console.error('프로필 정보 조회 실패:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 여러 프로필 일괄 업데이트
+   */
+  async batchUpdateProfiles(updates) {
+    try {
+      const updateData = [];
+
+      for (const update of updates) {
+        const profileRow = await this.findProfileRow(update.profileId);
+        if (!profileRow) continue;
+
+        const { rowIndex, headers } = profileRow;
+        
+        // 상태 컬럼 업데이트
+        const statusCol = headers.findIndex(h => h && h.includes('상태'));
+        if (statusCol !== -1) {
+          updateData.push({
+            range: `${this.pauseSheetName}!${this.columnToLetter(statusCol)}${rowIndex}`,
+            values: [[update.status || '일시중지']]
+          });
+        }
+
+        // 다음 결제일 업데이트
+        if (update.nextBillingDate) {
+          const billingCol = headers.findIndex(h => h && h.includes('다음 결제일'));
+          if (billingCol !== -1) {
+            updateData.push({
+              range: `${this.pauseSheetName}!${this.columnToLetter(billingCol)}${rowIndex}`,
+              values: [[update.nextBillingDate]]
+            });
+          }
+        }
+      }
+
+      if (updateData.length > 0) {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: this.spreadsheetId,
+          resource: {
+            valueInputOption: 'USER_ENTERED',
+            data: updateData
+          }
+        });
+
+        console.log(`✅ ${updates.length}개 프로필 일괄 업데이트 완료`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('일괄 업데이트 실패:', error.message);
+      return false;
+    }
+  }
+}
+
+module.exports = PauseSheetRepository;
