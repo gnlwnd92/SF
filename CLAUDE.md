@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **AdsPower YouTube Premium Automation** - Clean Architecture 기반 브라우저 자동화 시스템. AdsPower API + Puppeteer로 YouTube Premium 구독 관리. Awilix DI 컨테이너, 15개 언어 지원.
 
+**Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
+
 ## Core Commands
 
 ```bash
@@ -91,6 +93,21 @@ await new Promise(resolve => setTimeout(resolve, 5000));
 i--;
 continue;
 ```
+
+### 6. Repository 초기화 순서 (중요)
+Repository들은 `createLazyRepository()` 래퍼로 첫 호출시 자동 초기화됨. 직접 초기화 불필요:
+```javascript
+// ✅ 자동 초기화 (권장)
+const profiles = await repository.getAll();  // 첫 호출시 initialize() 자동 실행
+
+// ❌ 수동 초기화 필요 없음
+await repository.initialize();  // 불필요
+```
+
+### 7. 서비스 간 의존성 주입 순서
+`src/container.js`에서 서비스 등록 시 순환 의존성 주의:
+- `config` → `logger` → `adapters` → `repositories` → `services` → `usecases`
+- `asFunction(() => container.resolve('...'))`로 지연 해결 가능
 
 ## Architecture
 
@@ -237,3 +254,24 @@ ko, en, ja, zh, vi, th, id, ms, pt, es, de, fr, ru, ar, hi
 - 터미널 로그: `logs/terminal/` (JSON, 48시간 보존)
 - 에러 스크린샷: `screenshots/`
 - 세션 로그: `logs/sessions/`
+
+## 주요 서비스 역할 요약
+
+| 서비스 | 핵심 역할 |
+|--------|-----------|
+| `AuthenticationService` | Google 로그인 처리, 계정 선택 |
+| `ImprovedAuthenticationService` | 개선된 로그인 (CDP 네이티브 클릭) |
+| `NavigationService` | YouTube Premium 페이지 네비게이션 |
+| `LanguageService` | UI 언어 감지 및 텍스트 매핑 |
+| `ButtonInteractionService` | 버튼 클릭 (일시정지/재개) |
+| `DateParsingService` | 15개 언어 날짜 형식 파싱 |
+| `PopupService` | 확인 팝업 처리 |
+| `AdsPowerIdMappingService` | 프로필명 ↔ AdsPower ID 매핑 |
+
+## 코드 수정 시 체크리스트
+
+1. **새 UseCase 추가시**: `src/container.js`에 등록 + `inject()` 설정
+2. **브라우저 조작시**: try-finally로 `closeBrowser()` 보장
+3. **프로필 조회시**: `getAllProfiles()` 사용 (페이지네이션 자동)
+4. **다국어 텍스트 추가시**: `multilanguage.js` + `verify:dates` 검증
+5. **환경변수 추가시**: `.env.example` 동기화

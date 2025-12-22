@@ -15,7 +15,13 @@ const languages = {
       resume: ['Resume'],
       cancel: ['Cancel'],
       confirm: ['Confirm', 'OK'],
-      moreActions: ['More actions', 'More']
+      moreActions: ['More actions', 'More'],
+      // 팝업 확인 버튼 (action별 분리)
+      confirmButtons: {
+        pause: ['Pause', 'Pause membership', 'Confirm', 'OK', 'Yes'],
+        resume: ['Resume', 'Resume membership', 'Confirm', 'OK', 'Yes'],
+        general: ['Confirm', 'OK', 'Yes']
+      }
     },
     status: {
       paused: ['Paused', 'Membership paused'],
@@ -60,28 +66,46 @@ const languages = {
     code: 'ko',
     name: '한국어',
     buttons: {
-      manageMemership: ['구독 관리', '멤버십 관리', '관리'],
+      manageMemership: ['멤버십 관리', '구독 관리', '관리'],
       pause: ['일시중지'],
       pauseMembership: ['멤버십 일시중지'],
       resume: ['재개', '다시 시작'],
-      cancel: ['취소'],
+      resumeMembership: ['멤버십 재개'],
+      cancel: ['취소', '멤버십 취소'],
       confirm: ['확인'],
-      moreActions: ['추가 작업', '더보기']
+      moreActions: ['추가 작업', '더보기'],
+      edit: ['수정'],
+      // 팝업 확인 버튼 (action별 분리) - 스크린샷에서 확인된 실제 버튼 텍스트
+      confirmButtons: {
+        pause: ['멤버십 일시중지', '일시중지', '확인', '예'],
+        resume: ['재개', '멤버십 재개', '다시 시작', '확인', '예'],
+        general: ['확인', '예', 'OK']
+      }
     },
     status: {
       paused: ['일시중지됨', '멤버십 일시중지'],
       active: ['활성'],
       pausedUntil: '멤버십 일시중지',
       resumeOn: '멤버십 재개',
-      nextBilling: '다음 결제일'
+      nextBilling: '다음 결제일',
+      trialEnds: '무료 체험 종료일',
+      familyMembership: '가족 멤버십',
+      familySharing: '가족 공유 설정',
+      paymentCard: '결제 카드',
+      backupPayment: '백업 결제 수단'
     },
     popupTexts: {
       resumeConfirmation: ['멤버십 재개', '재개 확인', '구독 재개'],
       willBeResumed: ['멤버십이 재개됩니다', '재개됩니다'],
-      nextCharge: ['다음 결제일', '다음 청구일', '다음 결제']
+      nextCharge: ['다음 결제일', '다음 청구일', '다음 결제'],
+      // 일시중지 팝업 텍스트 (스크린샷에서 확인)
+      selectPauseDuration: '일시중지 기간 선택',
+      pauseDuration: ['1개월', '2개월', '3개월'],
+      paymentWillRestart: '결제가 다시 시작됩니다',
+      membershipWillBePaused: '멤버십이 일시중지됩니다'
     },
     datePatterns: {
-      // 한국어 날짜 패턴: "9월 11일" 또는 "2025. 10. 11."
+      // 한국어 날짜 패턴: "9월 11일" 또는 "2026. 1. 22." (스크린샷에서 확인)
       monthDay: /(\d{1,2})월\s*(\d{1,2})일/,
       fullDate: /(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.?/
     },
@@ -651,7 +675,13 @@ const languages = {
       confirm: ['Подтвердить', 'ОК', 'Да'],
       moreActions: ['Другие действия', 'Еще', 'Ещё'],
       edit: ['Изменить', 'Редактировать'],
-      accessSettings: ['Настройки доступа', 'Параметры доступа']
+      accessSettings: ['Настройки доступа', 'Параметры доступа'],
+      // 팝업 확인 버튼 (action별 분리) - 스크린샷에서 확인된 실제 버튼 텍스트
+      confirmButtons: {
+        pause: ['Приостановить подписку', 'Приостановить', 'Подтвердить', 'ОК', 'Да'],
+        resume: ['Возобновить', 'Возобновить подписку', 'Подтвердить', 'ОК', 'Да'],
+        general: ['Подтвердить', 'ОК', 'Да']
+      }
     },
     status: {
       paused: ['Приостановлена', 'Подписка приостановлена'],
@@ -663,13 +693,20 @@ const languages = {
       resumeDate: 'Дата возобновления подписки',
       payment: 'Оплата',
       backupPayment: 'Резервный способ оплаты',
-      billedWith: 'Способ оплаты'
+      billedWith: 'Способ оплаты',
+      trialEnds: 'Пробный период завершается',
+      familyMembership: 'Семейная подписка'
     },
     popupTexts: {
       // 재개 확인 팝업 텍스트
       resumeConfirmation: ['Возобновить подписку', 'Подтвердить возобновление', 'Возобновление подписки'],
       willBeResumed: ['Подписка будет возобновлена', 'будет возобновлена'],
-      nextCharge: ['Следующий платеж', 'Следующее списание', 'Дата следующего платежа']
+      nextCharge: ['Следующий платеж', 'Следующее списание', 'Дата следующего платежа'],
+      // 일시중지 팝업 텍스트 (스크린샷에서 확인)
+      selectPauseDuration: 'Выберите продолжительность перерыва',
+      pauseDuration: ['1 месяц', '2 месяца', '3 месяца'],
+      paymentWillRestart: 'Средства снова начнут списываться',
+      subscriptionWillBePaused: 'Ваша подписка будет приостановлена'
     },
     datePatterns: {
       // Русский формат: "9 сент.", "9 окт. 2025 г.", "9 сентября", "9 октября 2025 г."

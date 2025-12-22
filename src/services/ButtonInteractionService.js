@@ -784,16 +784,35 @@ class ButtonInteractionService {
   }
 
   getConfirmButtonTexts(language, action) {
+    const { languages } = require('../infrastructure/config/multilanguage');
+
+    // multilanguage.js에서 언어별 텍스트 가져오기
+    if (languages[language]?.buttons?.confirmButtons) {
+      const confirmButtons = languages[language].buttons.confirmButtons;
+      if (confirmButtons[action]) {
+        return confirmButtons[action];
+      }
+      if (confirmButtons.general) {
+        return confirmButtons.general;
+      }
+    }
+
+    // 폴백: 기본 텍스트 (영어 기본값 보장)
     const texts = {
       ko: {
-        pause: ['일시중지', '확인', '예'],
-        resume: ['재개', '확인', '예'],
+        pause: ['멤버십 일시중지', '일시중지', '확인', '예'],
+        resume: ['재개', '멤버십 재개', '다시 시작', '확인', '예'],
         general: ['확인', '예', 'OK']
       },
       en: {
-        pause: ['Pause', 'Confirm', 'OK', 'Yes'],
-        resume: ['Resume', 'Confirm', 'OK', 'Yes'],
+        pause: ['Pause', 'Pause membership', 'Confirm', 'OK', 'Yes'],
+        resume: ['Resume', 'Resume membership', 'Confirm', 'OK', 'Yes'],
         general: ['Confirm', 'OK', 'Yes']
+      },
+      ru: {
+        pause: ['Приостановить подписку', 'Приостановить', 'Подтвердить', 'ОК', 'Да'],
+        resume: ['Возобновить', 'Возобновить подписку', 'Подтвердить', 'ОК', 'Да'],
+        general: ['Подтвердить', 'ОК', 'Да']
       }
     };
 
