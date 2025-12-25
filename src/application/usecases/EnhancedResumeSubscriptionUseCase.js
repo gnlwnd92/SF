@@ -100,6 +100,7 @@ class EnhancedResumeSubscriptionUseCase {
       resumeDate: null,
       nextBillingDate: null,
       browserIP: null,
+      language: null,  // 감지된 언어 (통합워커용)
       error: null,
       duration: 0,
       timedOut: false,
@@ -258,6 +259,8 @@ class EnhancedResumeSubscriptionUseCase {
       }
 
       this.currentLanguage = await this.detectPageLanguage(browser);
+      result.language = this.currentLanguage;  // 통합워커용 언어 정보 저장
+
       this.log(`감지된 언어: ${languages[this.currentLanguage].name}`, 'info');
       console.log(chalk.green(`✅ 언어 감지 완료: ${languages[this.currentLanguage].name}\n`));
 

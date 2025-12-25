@@ -141,6 +141,7 @@ class EnhancedPauseSubscriptionUseCase {
       pauseDate: null,
       resumeDate: null,
       nextBillingDate: null,
+      language: null,  // 감지된 언어 (통합워커용)
       error: null,
       duration: 0
     };
@@ -198,10 +199,12 @@ class EnhancedPauseSubscriptionUseCase {
       }
       
       this.currentLanguage = await this.detectPageLanguage(browser);
+      result.language = this.currentLanguage;  // 통합워커용 언어 정보 저장
+
       // 언어 변형(pt-br, pt-pt)을 안전하게 처리
       const langInfo = languages[this.currentLanguage] || languages['pt'] || { name: this.currentLanguage };
       const displayName = langInfo.name || this.currentLanguage;
-      
+
       this.log(`감지된 언어: ${displayName}`, 'info');
       console.log(chalk.cyan(`📄 [LanguageDetect] 감지된 언어: ${displayName}`));
       
@@ -2807,6 +2810,14 @@ class EnhancedPauseSubscriptionUseCase {
           'Confirmar',
           'OK',
           'Continuar',
+          // 러시아어
+          'Приостановить подписку',
+          'Приостановить',
+          'Подтвердить приостановку',
+          'Да, приостановить',
+          'Подтвердить',
+          'ОК',
+          'Продолжить',
         ];
         
         // 우선순위에 따라 버튼 찾기

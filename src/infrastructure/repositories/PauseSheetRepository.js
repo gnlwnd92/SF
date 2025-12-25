@@ -956,6 +956,665 @@ class PauseSheetRepository {
       return false;
     }
   }
+
+  // ============================================================
+  // 시간체크 통합 워커용 메서드들 (I열 시간, J열 잠금)
+  // ============================================================
+
+  /**
+   * I열(시간), J열(잠금) 포함 작업 목록 가져오기
+   * 범위: A:J
+   *
+   * @param {string} sheetName - "일시중지" 또는 "결제재개"
+   * @returns {Promise<Array>} 작업 목록
+   */
+  async getTasksWithTimeAndLock(sheetName) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!A:J`
+      });
+
+      const rows = response.data.values || [];
+      if (rows.length < 2) return [];
+
+      const headers = rows[0];
+      const dataRows = rows.slice(1);
+
+      return dataRows.map((row, index) => ({
+        rowIndex: index + 2,            // 1-based, 헤더 제외
+        googleId: row[0] || '',          // A열: 아이디(이메일)
+        email: row[0] || '',             // A열 동일
+        password: row[1] || '',          // B열: 비밀번호
+        recoveryEmail: row[2] || '',     // C열: 복구이메일
+        code: row[3] || '',              // D열: 코드(TOTP)
+        status: row[4] || '',            // E열: 상태
+        nextPaymentDate: row[5] || '',   // F열: 다음결제일 (YYYY. M. D)
+        ip: row[6] || '',                // G열: IP
+        result: row[7] || '',            // H열: 결과
+        scheduledTimeStr: row[8] || '',  // I열: 시간 (HH:mm)
+        lockValue: row[9] || ''          // J열: 잠금
+      }));
+    } catch (error) {
+      console.error(`[PauseSheetRepository] ${sheetName} 작업 목록 조회 실패:`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * J열(잠금) 값만 읽기
+   *
+   * @param {string} sheetName - "일시중지" 또는 "결제재개"
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string>}
+   */
+  async getLockValue(sheetName, rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!J${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] J열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * J열(잠금) 값 업데이트
+   *
+   * @param {string} sheetName
+   * @param {number} rowIndex
+   * @param {string} value - 잠금 값 또는 빈 문자열
+   * @returns {Promise<boolean>}
+   */
+  async setLockValue(sheetName, rowIndex, value) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!J${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[value]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] J열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * H열(결과) 값 읽기
+   *
+   * @param {string} sheetName
+   * @param {number} rowIndex
+   * @returns {Promise<string>}
+   */
+  async getResultValue(sheetName, rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!H${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] H열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * H열(결과)에 결과 누적 기록
+   * 기존 값이 있으면 줄바꿈으로 추가
+   *
+   * @param {string} sheetName
+   * @param {number} rowIndex
+   * @param {string} newResult - 새 결과 문자열
+   * @returns {Promise<boolean>}
+   */
+  async appendResultToCell(sheetName, rowIndex, newResult) {
+    await this.initialize();
+
+    try {
+      // 기존 H열 값 읽기
+      const existingResult = await this.getResultValue(sheetName, rowIndex);
+
+      // 누적 결과 생성
+      let finalResult;
+      if (existingResult && existingResult.trim()) {
+        finalResult = `${existingResult}\n${newResult}`;
+      } else {
+        finalResult = newResult;
+      }
+
+      // H열 업데이트
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${sheetName}!H${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[finalResult]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] H열 누적 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  // ============================================================
+  // 통합워커 탭 전용 메서드들 (v2.0 - 상태 기반 결제 주기 관리)
+  // ============================================================
+  // 시트 구조:
+  //   A: 아이디(이메일), B: 비밀번호, C: 복구이메일, D: 코드(TOTP)
+  //   E: 상태, F: 다음결제일, G: IP, H: 결과
+  //   I: 시간, J: 잠금, K: 결제카드, L: 재시도
+  // ============================================================
+
+  /**
+   * 통합워커 탭 이름 (상수)
+   */
+  get integratedWorkerSheetName() {
+    return '통합워커';
+  }
+
+  /**
+   * 통합워커 탭에서 전체 작업 목록 가져오기 (A:L 범위)
+   * 상태(E열), 시간(I열), 잠금(J열), 재시도(L열) 포함
+   *
+   * @returns {Promise<Array>} 작업 목록
+   */
+  async getIntegratedWorkerTasks() {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!A:L`
+      });
+
+      const rows = response.data.values || [];
+      if (rows.length < 2) return [];
+
+      const headers = rows[0];
+      const dataRows = rows.slice(1);
+
+      return dataRows.map((row, index) => ({
+        rowIndex: index + 2,            // 1-based, 헤더 제외
+        googleId: row[0] || '',          // A열: 아이디(이메일)
+        email: row[0] || '',             // A열 동일
+        password: row[1] || '',          // B열: 비밀번호
+        recoveryEmail: row[2] || '',     // C열: 복구이메일
+        totpCode: row[3] || '',          // D열: 코드(TOTP)
+        code: row[3] || '',              // D열 동일
+        status: row[4] || '',            // E열: 상태 (일시중지/결제중/만료됨)
+        nextPaymentDate: row[5] || '',   // F열: 다음결제일 (YYYY. M. D)
+        ip: row[6] || '',                // G열: IP
+        result: row[7] || '',            // H열: 결과
+        scheduledTimeStr: row[8] || '',  // I열: 시간 (HH:mm)
+        lockValue: row[9] || '',         // J열: 잠금
+        paymentCard: row[10] || '',      // K열: 결제카드
+        retryCount: row[11] || ''        // L열: 재시도 횟수
+      }));
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 작업 목록 조회 실패:`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * 통합워커 탭의 E열(상태) 업데이트
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} newStatus - 새 상태 ("일시중지" 또는 "결제중")
+   * @returns {Promise<boolean>}
+   */
+  async updateIntegratedWorkerStatus(rowIndex, newStatus) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!E${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[newStatus]]
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 E열 상태 업데이트: 행${rowIndex} → "${newStatus}"`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 E열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 J열(잠금) 값 읽기
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string>}
+   */
+  async getIntegratedWorkerLockValue(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 J열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * 통합워커 탭의 J열(잠금) 값 업데이트
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} value - 잠금 값 또는 빈 문자열
+   * @returns {Promise<boolean>}
+   */
+  async setIntegratedWorkerLockValue(rowIndex, value) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[value]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 J열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 L열(재시도) 횟수 읽기
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<number>} 재시도 횟수 (기본값 0)
+   */
+  async getIntegratedWorkerRetryCount(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!L${rowIndex}`
+      });
+
+      const values = response.data.values;
+      if (values && values[0] && values[0][0]) {
+        const parsed = parseInt(values[0][0], 10);
+        return isNaN(parsed) ? 0 : parsed;
+      }
+      return 0;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 L열 조회 실패:`, error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 L열(재시도) 횟수 설정
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {number|string} value - 재시도 횟수 (빈 문자열로 리셋 가능)
+   * @returns {Promise<boolean>}
+   */
+  async setIntegratedWorkerRetryCount(rowIndex, value) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!L${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[value === '' ? '' : String(value)]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 L열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 L열(재시도) 횟수 1 증가
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<number>} 증가 후 재시도 횟수
+   */
+  async incrementIntegratedWorkerRetryCount(rowIndex) {
+    const currentCount = await this.getIntegratedWorkerRetryCount(rowIndex);
+    const newCount = currentCount + 1;
+    await this.setIntegratedWorkerRetryCount(rowIndex, newCount);
+    return newCount;
+  }
+
+  /**
+   * 통합워커 탭의 L열(재시도) 횟수 리셋 (성공 시 호출)
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<boolean>}
+   */
+  async resetIntegratedWorkerRetryCount(rowIndex) {
+    return await this.setIntegratedWorkerRetryCount(rowIndex, '');
+  }
+
+  /**
+   * 통합워커 탭의 H열(결과) 값 읽기
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string>}
+   */
+  async getIntegratedWorkerResultValue(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!H${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 H열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * 통합워커 탭의 H열(결과)에 결과 누적 기록
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} newResult - 새 결과 문자열
+   * @returns {Promise<boolean>}
+   */
+  async appendIntegratedWorkerResult(rowIndex, newResult) {
+    await this.initialize();
+
+    try {
+      // 기존 H열 값 읽기
+      const existingResult = await this.getIntegratedWorkerResultValue(rowIndex);
+
+      // 누적 결과 생성
+      let finalResult;
+      if (existingResult && existingResult.trim()) {
+        finalResult = `${existingResult}\n${newResult}`;
+      } else {
+        finalResult = newResult;
+      }
+
+      // H열 업데이트
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!H${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[finalResult]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 H열 누적 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 G열(IP) 업데이트
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} ip - IP 주소
+   * @returns {Promise<boolean>}
+   */
+  async updateIntegratedWorkerIP(rowIndex, ip) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[ip]]
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 G열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭 - 작업 성공 시 일괄 업데이트
+   * E열(상태), H열(결과), G열(IP), L열(재시도 리셋)
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {object} data - 업데이트 데이터
+   * @param {string} data.newStatus - 새 상태
+   * @param {string} data.resultText - 결과 텍스트
+   * @param {string} [data.ip] - IP 주소 (선택)
+   * @returns {Promise<boolean>}
+   */
+  async updateIntegratedWorkerOnSuccess(rowIndex, { newStatus, resultText, ip, nextBillingDate }) {
+    await this.initialize();
+
+    try {
+      const updateData = [];
+
+      // E열: 상태 업데이트
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!E${rowIndex}`,
+        values: [[newStatus]]
+      });
+
+      // F열: 다음결제일 (있으면)
+      if (nextBillingDate) {
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!F${rowIndex}`,
+          values: [[nextBillingDate]]
+        });
+      }
+
+      // H열: 결과 누적
+      const existingResult = await this.getIntegratedWorkerResultValue(rowIndex);
+      const finalResult = existingResult && existingResult.trim()
+        ? `${existingResult}\n${resultText}`
+        : resultText;
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!H${rowIndex}`,
+        values: [[finalResult]]
+      });
+
+      // G열: IP (있으면)
+      if (ip) {
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
+          values: [[ip]]
+        });
+      }
+
+      // L열: 재시도 리셋
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!L${rowIndex}`,
+        values: [['']]
+      });
+
+      // J열: 잠금 해제
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
+        values: [['']]
+      });
+
+      await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: this.spreadsheetId,
+        resource: {
+          valueInputOption: 'RAW',
+          data: updateData
+        }
+      });
+
+      const dateInfo = nextBillingDate ? `, 다음결제일→"${nextBillingDate}"` : '';
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 성공 업데이트 완료: 상태→"${newStatus}"${dateInfo}`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 성공 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭 - 영구 실패 처리 (재시도 불가 상태)
+   * reCAPTCHA, 만료, 계정잠김 등 재시도해도 해결되지 않는 상태
+   * E열(상태 변경), H열(결과), J열(잠금 해제) - L열(재시도)는 증가 안함
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {object} data - 업데이트 데이터
+   * @param {string} data.newStatus - 새 상태 (만료됨, 계정잠김, reCAPTCHA차단 등)
+   * @param {string} data.resultText - 결과 텍스트
+   * @returns {Promise<boolean>}
+   */
+  async updateIntegratedWorkerPermanentFailure(rowIndex, { newStatus, resultText }) {
+    await this.initialize();
+
+    try {
+      const updateData = [];
+
+      // E열: 영구 상태로 변경
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!E${rowIndex}`,
+        values: [[newStatus]]
+      });
+
+      // H열: 결과 누적
+      const existingResult = await this.getIntegratedWorkerResultValue(rowIndex);
+      const finalResult = existingResult && existingResult.trim()
+        ? `${existingResult}\n${resultText}`
+        : resultText;
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!H${rowIndex}`,
+        values: [[finalResult]]
+      });
+
+      // J열: 잠금 해제
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
+        values: [['']]
+      });
+
+      // L열: 재시도 횟수 증가 안함 (영구 실패이므로)
+
+      await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: this.spreadsheetId,
+        resource: {
+          valueInputOption: 'RAW',
+          data: updateData
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 영구실패 업데이트: 상태→"${newStatus}"`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 영구실패 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭 - 작업 실패 시 일괄 업데이트
+   * H열(결과), L열(재시도 +1), J열(잠금 해제)
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {object} data - 업데이트 데이터
+   * @param {string} data.resultText - 결과 텍스트 (에러 메시지)
+   * @returns {Promise<number>} 새 재시도 횟수
+   */
+  async updateIntegratedWorkerOnFailure(rowIndex, { resultText }) {
+    await this.initialize();
+
+    try {
+      // 현재 재시도 횟수
+      const currentRetry = await this.getIntegratedWorkerRetryCount(rowIndex);
+      const newRetry = currentRetry + 1;
+
+      const updateData = [];
+
+      // H열: 결과 누적
+      const existingResult = await this.getIntegratedWorkerResultValue(rowIndex);
+      const finalResult = existingResult && existingResult.trim()
+        ? `${existingResult}\n${resultText}`
+        : resultText;
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!H${rowIndex}`,
+        values: [[finalResult]]
+      });
+
+      // L열: 재시도 +1
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!L${rowIndex}`,
+        values: [[String(newRetry)]]
+      });
+
+      // J열: 잠금 해제
+      updateData.push({
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
+        values: [['']]
+      });
+
+      await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: this.spreadsheetId,
+        resource: {
+          valueInputOption: 'RAW',
+          data: updateData
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 실패 업데이트 완료: 재시도→${newRetry}`);
+      return newRetry;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 실패 업데이트 실패:`, error.message);
+      return -1;
+    }
+  }
 }
 
 module.exports = PauseSheetRepository;

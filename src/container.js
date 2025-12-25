@@ -390,6 +390,11 @@ const EnhancedDateParsingService = require('./services/EnhancedDateParsingServic
 // 스케줄링 서비스
 const SchedulerService = require('./services/SchedulerService');
 
+// 시간체크 통합 워커 관련 서비스
+const TimeFilterService = require('./services/TimeFilterService');
+const WorkerLockService = require('./services/WorkerLockService');
+const ScheduledSubscriptionWorkerUseCase = require('./application/usecases/ScheduledSubscriptionWorkerUseCase');
+
 // 병렬 처리 및 모니터링 서비스 (Day 9-10)
 const ParallelBatchProcessor = require('./services/ParallelBatchProcessor');
 const RealTimeMonitoringDashboard = require('./services/RealTimeMonitoringDashboard');
@@ -1270,6 +1275,42 @@ function setupContainer(initialConfig = {}) {
 
     // 배치 모니터 대시보드 (싱글톤)
     batchMonitorDashboard: asClass(require('./presentation/cli/BatchMonitorDashboard')).singleton(),
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 시간체크 통합 구독관리 워커 시스템
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // 시간 필터링 서비스 (KST 기준 시간 조건 필터링)
+    timeFilterService: asFunction(() => {
+      return new TimeFilterService({
+        logger: container.resolve('logger'),
+        debugMode: config.debugMode || false
+      });
+    }).singleton(),
+
+    // 워커 잠금 서비스 (분산 작업 충돌 방지)
+    workerLockService: asFunction(() => {
+      return new WorkerLockService({
+        sheetsRepository: container.resolve('pauseSheetRepository'),
+        logger: container.resolve('logger'),
+        debugMode: config.debugMode || false,
+        lockExpiryMinutes: 15  // 15분 초과 시 잠금 무효화
+      });
+    }).singleton(),
+
+    // 시간체크 통합 구독관리 워커 UseCase v2.0
+    // '통합워커' 탭에서 상태 기반 결제 주기 관리
+    scheduledSubscriptionWorkerUseCase: asClass(ScheduledSubscriptionWorkerUseCase)
+      .inject(() => ({
+        adsPowerAdapter: container.resolve('adsPowerAdapter'),
+        adsPowerIdMappingService: container.resolve('adsPowerIdMappingService'),  // 이메일 → AdsPower ID 매핑
+        pauseUseCase: container.resolve('enhancedPauseSubscriptionUseCase'),
+        resumeUseCase: container.resolve('enhancedResumeSubscriptionUseCase'),
+        sheetsRepository: container.resolve('pauseSheetRepository'),
+        timeFilterService: container.resolve('timeFilterService'),
+        workerLockService: container.resolve('workerLockService'),
+        logger: container.resolve('logger')
+      })),
 
   });
 

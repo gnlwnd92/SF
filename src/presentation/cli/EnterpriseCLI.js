@@ -268,6 +268,7 @@ class EnterpriseCLI {
           { name: '💳 백업카드 변경', value: 'backupCardChange' },
 
           new inquirer.Separator(chalk.gray('─── 배치 작업 (방어적 분산 처리) ───')),
+          { name: '📅 시간체크 통합 워커 (일시중지+재개)', value: 'scheduledWorker' },
           { name: '🛡️  배치 일시중지 (방어적 분산)', value: 'batchPauseOptimized' },
           { name: '🛡️  배치 재개 (방어적 분산)', value: 'batchResumeOptimized' },
           { name: '📊 상태 확인', value: 'checkStatus' },
@@ -285,10 +286,8 @@ class EnterpriseCLI {
           new inquirer.Separator(chalk.gray('─── 시스템 ───')),
           { name: '🔧 설정', value: 'settings' },
           { name: '📋 로그 보기', value: 'viewLogs' },
+          { name: '🧹 로그/스크린샷 정리', value: 'logCleanup' },
           { name: '🧑 테스트', value: 'runTests' },
-          { name: '🧹 로그/스크린샷 정리 (7일 이상)', value: 'cleanOldFiles' },
-          { name: '🧹 로그/스크린샷 전체 정리', value: 'cleanAllFiles' },
-          { name: '📊 남은 파일 확인', value: 'checkRemainingFiles' },
 
           new inquirer.Separator(),
           { name: chalk.red('❌ 종료'), value: 'exit' }
@@ -3145,6 +3144,121 @@ class EnterpriseCLI {
   }
 
   /**
+   * 시간체크 통합 워커 (일시중지 + 결제재개)
+   * - 일시중지: 현재시간 + N분 이전의 계정 처리
+   * - 결제재개: 현재시간 - M분 이전의 계정 처리
+   * - 분산 워커: J열 잠금으로 여러 PC에서 충돌 없이 작업
+   */
+  async scheduledWorker() {
+    try {
+      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.0'));
+      console.log(chalk.gray('─'.repeat(50)));
+      console.log(chalk.gray('  • 결제재개: 결제 전 M분에 "일시중지" → "결제중"'));
+      console.log(chalk.gray('  • 일시중지: 결제 후 N분에 "결제중" → "일시중지"'));
+      console.log(chalk.gray('  • 분산 워커: 여러 PC에서 동시 실행 가능'));
+      console.log(chalk.gray('  • 지속 실행: 새 대상 자동 감지'));
+      console.log(chalk.gray('  • 참조 탭: 통합워커'));
+      console.log(chalk.gray('─'.repeat(50)));
+
+      // 파라미터 입력
+      const { resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds, continuous, debugMode } = await inquirer.prompt([
+        {
+          type: 'number',
+          name: 'resumeMinutesBefore',
+          message: '결제재개 기준 (결제 전 M분):',
+          default: 10,
+          validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
+        },
+        {
+          type: 'number',
+          name: 'pauseMinutesAfter',
+          message: '일시중지 기준 (결제 후 N분):',
+          default: 30,
+          validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
+        },
+        {
+          type: 'number',
+          name: 'maxRetryCount',
+          message: '최대 재시도 횟수:',
+          default: 3,
+          validate: (value) => value >= 1 && value <= 10 ? true : '1-10 사이의 값을 입력하세요'
+        },
+        {
+          type: 'number',
+          name: 'checkIntervalSeconds',
+          message: '체크 간격 (초):',
+          default: 60,
+          validate: (value) => value >= 10 ? true : '10초 이상의 값을 입력하세요'
+        },
+        {
+          type: 'confirm',
+          name: 'continuous',
+          message: '지속 실행 모드? (Ctrl+C로 종료)',
+          default: true
+        },
+        {
+          type: 'confirm',
+          name: 'debugMode',
+          message: '디버그 모드 활성화?',
+          default: false
+        }
+      ]);
+
+      // 확인
+      console.log(chalk.cyan('\n📋 설정 확인:'));
+      console.log(chalk.gray(`  • 결제재개: 결제 전 ${resumeMinutesBefore}분에 "일시중지" → "결제중"`));
+      console.log(chalk.gray(`  • 일시중지: 결제 후 ${pauseMinutesAfter}분에 "결제중" → "일시중지"`));
+      console.log(chalk.gray(`  • 최대 재시도: ${maxRetryCount}회`));
+      console.log(chalk.gray(`  • 체크 간격: ${checkIntervalSeconds}초`));
+      console.log(chalk.gray(`  • 지속 실행: ${continuous ? '켜짐' : '꺼짐'}`));
+      console.log(chalk.gray(`  • 디버그: ${debugMode ? '켜짐' : '꺼짐'}`));
+
+      const { confirm } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'confirm',
+          message: '위 설정으로 시작하시겠습니까?',
+          default: true
+        }
+      ]);
+
+      if (!confirm) {
+        console.log(chalk.yellow('\n⚠️ 취소되었습니다.'));
+        await this.waitForEnter();
+        return;
+      }
+
+      // UseCase 실행
+      console.log(chalk.green('\n🚀 시간체크 통합 워커 v2.0 시작...\n'));
+
+      const scheduledWorkerUseCase = this.container.resolve('scheduledSubscriptionWorkerUseCase');
+
+      const result = await scheduledWorkerUseCase.execute({
+        resumeMinutesBefore,
+        pauseMinutesAfter,
+        maxRetryCount,
+        checkIntervalSeconds,
+        continuous,
+        debugMode
+      });
+
+      // 결과 표시
+      if (result.success) {
+        console.log(chalk.green('\n✅ 시간체크 통합 워커 완료'));
+      } else {
+        console.log(chalk.yellow('\n⚠️ 일부 작업이 실패했습니다.'));
+      }
+
+    } catch (error) {
+      if (this.spinner) this.spinner.fail();
+      console.log(chalk.red(`\n❌ 오류: ${error.message}`));
+      console.error(error);
+    }
+
+    await this.waitForEnter();
+  }
+
+  /**
    * 기존 배치 재개 로직 (별도 메서드로 분리)
    */
   async legacyBatchResume() {
@@ -4153,212 +4267,190 @@ class EnterpriseCLI {
   }
 
   /**
-   * 오래된 로그/스크린샷 정리 (7일 이상)
+   * 로그/스크린샷 정리 (통합)
+   * - 권장 기간: 디렉토리별 권장 보존 기간 적용
+   * - 사용자 지정: 0일(모두 삭제) ~ N일(N일 이전 삭제)
    */
-  async cleanOldFiles() {
+  async logCleanup() {
     try {
-      console.log(chalk.cyan('\n🧹 로그/스크린샷 정리 (7일 이상)\n'));
-      console.log(chalk.gray('이 기능은 7일 이상 된 로그 파일과 스크린샷을 삭제합니다.'));
+      const LogCleanupUseCase = require('../../application/usecases/LogCleanupUseCase');
+      const logCleanupUseCase = new LogCleanupUseCase({ logger: console });
 
-      // 확인 프롬프트
-      const { confirm } = await inquirer.prompt([
+      console.log(chalk.cyan.bold('\n🧹 로그 및 스크린샷 정리'));
+      console.log(chalk.gray('─'.repeat(50)));
+
+      // 현재 상태 미리보기
+      await logCleanupUseCase.preview();
+
+      // 정리 모드 선택
+      const { mode } = await inquirer.prompt([
         {
-          type: 'confirm',
-          name: 'confirm',
-          message: chalk.yellow('7일 이상 된 파일을 삭제하시겠습니까?'),
-          default: false
+          type: 'list',
+          name: 'mode',
+          message: '정리 방식을 선택하세요:',
+          choices: [
+            {
+              name: '📋 권장 기간으로 정리 (디렉토리별 최적화)',
+              value: 'recommended'
+            },
+            {
+              name: '⚙️  사용자 지정 기간',
+              value: 'custom'
+            },
+            {
+              name: '🔍 미리보기만 (삭제 없음)',
+              value: 'preview'
+            },
+            {
+              name: '❌ 취소',
+              value: 'cancel'
+            }
+          ]
         }
       ]);
 
-      if (!confirm) {
+      if (mode === 'cancel') {
         console.log(chalk.gray('\n취소되었습니다.'));
         await this.waitForEnter();
         return;
       }
 
-      console.log(chalk.cyan('\n정리 중...\n'));
+      if (mode === 'preview') {
+        // 권장 기간 정보 표시
+        console.log(chalk.cyan('\n📋 디렉토리별 권장 보존 기간:'));
+        console.log(chalk.gray('─'.repeat(50)));
 
-      // PowerShell 스크립트 실행
-      const { spawn } = require('child_process');
-      const path = require('path');
+        const retentionInfo = logCleanupUseCase.getRecommendedRetentionInfo();
+        for (const info of retentionInfo) {
+          console.log(chalk.white(`  ${info.path.padEnd(25)} → ${chalk.yellow(info.recommendedText)}`));
+        }
+        console.log(chalk.gray('─'.repeat(50)));
 
-      const scriptPath = path.join(__dirname, '../../../clean.ps1');
-      const ps = spawn('powershell.exe', [
-        '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath
-      ]);
+        await this.waitForEnter();
+        return;
+      }
 
-      // 실시간 출력 스트리밍
-      ps.stdout.on('data', (data) => {
-        process.stdout.write(data.toString());
-      });
+      let days = 0;
 
-      ps.stderr.on('data', (data) => {
-        process.stderr.write(chalk.red(data.toString()));
-      });
-
-      // 프로세스 종료 대기
-      await new Promise((resolve, reject) => {
-        ps.on('close', (code) => {
-          if (code === 0) {
-            console.log(chalk.green('\n✅ 정리 완료!'));
-            resolve();
-          } else {
-            console.log(chalk.yellow(`\n⚠️ 프로세스 종료 코드: ${code}`));
-            resolve();
+      if (mode === 'custom') {
+        // 사용자 지정 기간 입력
+        const { customDays } = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'customDays',
+            message: '보존 기간을 선택하세요:',
+            choices: [
+              { name: '🗑️  0일 (모든 파일 삭제)', value: 0 },
+              { name: '📅 1일 (24시간 이내 유지)', value: 1 },
+              { name: '📅 2일 (48시간 이내 유지)', value: 2 },
+              { name: '📅 3일', value: 3 },
+              { name: '📅 7일 (1주일)', value: 7 },
+              { name: '📅 14일 (2주일)', value: 14 },
+              { name: '📅 30일 (1개월)', value: 30 },
+              { name: '✏️  직접 입력', value: 'input' }
+            ]
           }
-        });
+        ]);
 
-        ps.on('error', (err) => {
-          console.error(chalk.red('\n❌ PowerShell 실행 오류:'), err.message);
-          reject(err);
-        });
+        if (customDays === 'input') {
+          const { inputDays } = await inquirer.prompt([
+            {
+              type: 'input',
+              name: 'inputDays',
+              message: '보존할 일수를 입력하세요 (0 = 모두 삭제):',
+              validate: (input) => {
+                const num = parseInt(input, 10);
+                if (isNaN(num) || num < 0) {
+                  return '0 이상의 숫자를 입력하세요.';
+                }
+                return true;
+              }
+            }
+          ]);
+          days = parseInt(inputDays, 10);
+        } else {
+          days = customDays;
+        }
+      }
+
+      // 삭제 확인
+      const modeText = mode === 'recommended'
+        ? '권장 보존 기간 이전의 파일'
+        : days === 0
+          ? '모든 파일'
+          : `${days}일 이전의 파일`;
+
+      console.log(chalk.yellow(`\n⚠️  ${modeText}을(를) 삭제합니다.`));
+
+      // 0일(모두 삭제)인 경우 2단계 확인
+      if (mode === 'custom' && days === 0) {
+        const { confirm1 } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'confirm1',
+            message: chalk.red.bold('정말로 모든 파일을 삭제하시겠습니까?'),
+            default: false
+          }
+        ]);
+
+        if (!confirm1) {
+          console.log(chalk.gray('\n취소되었습니다.'));
+          await this.waitForEnter();
+          return;
+        }
+
+        const { confirm2 } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'confirm2',
+            message: chalk.red.bold('최종 확인: 이 작업은 되돌릴 수 없습니다!'),
+            default: false
+          }
+        ]);
+
+        if (!confirm2) {
+          console.log(chalk.gray('\n취소되었습니다.'));
+          await this.waitForEnter();
+          return;
+        }
+      } else {
+        const { confirm } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'confirm',
+            message: '계속 진행하시겠습니까?',
+            default: true
+          }
+        ]);
+
+        if (!confirm) {
+          console.log(chalk.gray('\n취소되었습니다.'));
+          await this.waitForEnter();
+          return;
+        }
+      }
+
+      // 정리 실행
+      const result = await logCleanupUseCase.execute({
+        mode: mode === 'recommended' ? 'recommended' : 'custom',
+        days: days,
+        dryRun: false
       });
+
+      if (result.errors.length > 0) {
+        console.log(chalk.yellow('\n⚠️  일부 오류가 발생했습니다:'));
+        for (const err of result.errors.slice(0, 5)) {
+          console.log(chalk.red(`  - ${err.path}: ${err.error}`));
+        }
+        if (result.errors.length > 5) {
+          console.log(chalk.gray(`  ... 외 ${result.errors.length - 5}개`));
+        }
+      }
 
       await this.waitForEnter();
 
     } catch (error) {
       console.error(chalk.red('\n❌ 파일 정리 오류:'), error.message);
-      await this.waitForEnter();
-    }
-  }
-
-  /**
-   * 모든 로그/스크린샷 정리
-   */
-  async cleanAllFiles() {
-    try {
-      console.log(chalk.cyan('\n🧹 로그/스크린샷 전체 정리\n'));
-      console.log(chalk.red.bold('⚠️ 경고: 모든 로그 파일과 스크린샷을 삭제합니다!'));
-      console.log(chalk.gray('이 작업은 되돌릴 수 없습니다.\n'));
-
-      // 2단계 확인
-      const { confirm1 } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'confirm1',
-          message: chalk.yellow('정말로 모든 파일을 삭제하시겠습니까?'),
-          default: false
-        }
-      ]);
-
-      if (!confirm1) {
-        console.log(chalk.gray('\n취소되었습니다.'));
-        await this.waitForEnter();
-        return;
-      }
-
-      const { confirm2 } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'confirm2',
-          message: chalk.red.bold('최종 확인: 정말로 모든 파일을 삭제합니까?'),
-          default: false
-        }
-      ]);
-
-      if (!confirm2) {
-        console.log(chalk.gray('\n취소되었습니다.'));
-        await this.waitForEnter();
-        return;
-      }
-
-      console.log(chalk.cyan('\n전체 정리 중...\n'));
-
-      // PowerShell 스크립트 실행 (-Days 0)
-      const { spawn } = require('child_process');
-      const path = require('path');
-
-      const scriptPath = path.join(__dirname, '../../../clean.ps1');
-      const ps = spawn('powershell.exe', [
-        '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath,
-        '-Days', '0'
-      ]);
-
-      // 실시간 출력 스트리밍
-      ps.stdout.on('data', (data) => {
-        process.stdout.write(data.toString());
-      });
-
-      ps.stderr.on('data', (data) => {
-        process.stderr.write(chalk.red(data.toString()));
-      });
-
-      // 프로세스 종료 대기
-      await new Promise((resolve, reject) => {
-        ps.on('close', (code) => {
-          if (code === 0) {
-            console.log(chalk.green('\n✅ 전체 정리 완료!'));
-            resolve();
-          } else {
-            console.log(chalk.yellow(`\n⚠️ 프로세스 종료 코드: ${code}`));
-            resolve();
-          }
-        });
-
-        ps.on('error', (err) => {
-          console.error(chalk.red('\n❌ PowerShell 실행 오류:'), err.message);
-          reject(err);
-        });
-      });
-
-      await this.waitForEnter();
-
-    } catch (error) {
-      console.error(chalk.red('\n❌ 파일 정리 오류:'), error.message);
-      await this.waitForEnter();
-    }
-  }
-
-  /**
-   * 남은 파일 수 확인
-   */
-  async checkRemainingFiles() {
-    try {
-      console.log(chalk.cyan('\n📊 남은 파일 확인\n'));
-
-      // PowerShell 스크립트 실행
-      const { spawn } = require('child_process');
-      const path = require('path');
-
-      const scriptPath = path.join(__dirname, '../../../check-remaining.ps1');
-      const ps = spawn('powershell.exe', [
-        '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath
-      ]);
-
-      // 실시간 출력 스트리밍
-      ps.stdout.on('data', (data) => {
-        process.stdout.write(data.toString());
-      });
-
-      ps.stderr.on('data', (data) => {
-        process.stderr.write(chalk.red(data.toString()));
-      });
-
-      // 프로세스 종료 대기
-      await new Promise((resolve, reject) => {
-        ps.on('close', (code) => {
-          if (code === 0) {
-            console.log(); // 빈 줄
-            resolve();
-          } else {
-            console.log(chalk.yellow(`\n⚠️ 프로세스 종료 코드: ${code}`));
-            resolve();
-          }
-        });
-
-        ps.on('error', (err) => {
-          console.error(chalk.red('\n❌ PowerShell 실행 오류:'), err.message);
-          reject(err);
-        });
-      });
-
-      await this.waitForEnter();
-
-    } catch (error) {
-      console.error(chalk.red('\n❌ 파일 확인 오류:'), error.message);
       await this.waitForEnter();
     }
   }
