@@ -267,7 +267,19 @@ class ScheduledSubscriptionWorkerUseCase {
         });
 
         this.stats[type].success++;
-        this.log(chalk.green(`     ✅ ${type === 'resume' ? '결제재개' : '일시중지'} 성공 → 상태: ${newStatus}`));
+
+        // 이미 완료된 상태인지 확인
+        const isAlreadyDone =
+          result.status === 'already_paused' ||
+          result.status === 'already_active' ||
+          result.alreadyActive === true;
+
+        const actionName = type === 'resume' ? '결제재개' : '일시중지';
+        if (isAlreadyDone) {
+          this.log(chalk.yellow(`     ✅ ${actionName} 이미완료 → 상태: ${newStatus}`));
+        } else {
+          this.log(chalk.green(`     🆕 ${actionName} 신규성공 → 상태: ${newStatus}`));
+        }
 
         // 다음결제일 정보 출력
         if (result.nextBillingDate) {
@@ -492,6 +504,10 @@ class ScheduledSubscriptionWorkerUseCase {
   /**
    * 결과 텍스트 포맷팅
    * 형식: {이모지} {작업유형} ({언어팩}) {결과} | {시간} | {추가정보}
+   *
+   * 결과 구분:
+   * - 신규성공: 실제로 상태가 변경된 경우
+   * - 이미완료: 이미 해당 상태였던 경우 (already_paused, already_active)
    */
   formatResultText(type, success, result = {}) {
     const workerId = this.workerLockService.getWorkerId();
@@ -502,7 +518,16 @@ class ScheduledSubscriptionWorkerUseCase {
     const language = result.language || result.detectedLanguage || result.lang || 'Unknown';
 
     if (success) {
-      return `✅ ${typeName} (${language}) 성공 | ${timestamp} | ${workerId}`;
+      // 이미 완료된 상태인지 확인
+      const isAlreadyDone =
+        result.status === 'already_paused' ||
+        result.status === 'already_active' ||
+        result.alreadyActive === true;
+
+      const resultLabel = isAlreadyDone ? '이미완료' : '신규성공';
+      const emoji = isAlreadyDone ? '✅' : '🆕';
+
+      return `${emoji} ${typeName} (${language}) ${resultLabel} | ${timestamp} | ${workerId}`;
     } else {
       const errorMsg = (result.error || '').substring(0, 40);
       return `❌ ${typeName} (${language}) 실패 | ${timestamp} | ${errorMsg}`;
