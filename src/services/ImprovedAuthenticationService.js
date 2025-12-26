@@ -260,12 +260,11 @@ class ImprovedAuthenticationService {
             return result;
 
           case 'image_captcha':
-            // ========== 이미지 CAPTCHA 감지 - 재시도 필요 ==========
-            // Anti-Captcha API 대신 브라우저를 닫고 재시도하는 전략 사용
-            // CAPTCHA는 IP/세션 기반이므로 새 세션에서는 안 나타날 수 있음
-            this.log('🖼️ 이미지 CAPTCHA 감지됨 - 재시도 필요', 'warning');
+            // ========== 이미지 CAPTCHA 감지 - "다른 계정 사용" 우회 ==========
+            // 기존 계정 클릭 시 CAPTCHA가 발생하면, 뒤로가기 후 "다른 계정 사용"으로 우회
+            this.log('🖼️ 이미지 CAPTCHA 감지됨 - "다른 계정 사용" 우회 시도', 'warning');
             console.log(chalk.yellow('\n  🖼️ 이미지 CAPTCHA 감지됨!'));
-            console.log(chalk.yellow('     → 브라우저를 닫고 재시도합니다...'));
+            console.log(chalk.cyan('     → "다른 계정 사용" 버튼으로 우회 시도...'));
 
             // 스크린샷 저장
             if (options.screenshotEnabled) {
@@ -278,7 +277,47 @@ class ImprovedAuthenticationService {
               }
             }
 
-            // skipRetry: false로 설정하여 워크플로우에서 재시도 가능하게 함
+            // ============================================================
+            // CAPTCHA 우회 전략:
+            // 1. 뒤로가기 (계정 선택 페이지로)
+            // 2. "다른 계정 사용" 클릭
+            // 3. 이메일 입력 페이지로 이동
+            // ============================================================
+            try {
+              console.log(chalk.gray('     1️⃣ 뒤로가기 실행 중...'));
+              await page.goBack({ waitUntil: 'networkidle2', timeout: 10000 });
+              await new Promise(r => setTimeout(r, 2000));
+
+              // 계정 선택 페이지인지 확인
+              const backPageType = await this.detectPageType(page);
+              console.log(chalk.gray(`     📍 현재 페이지: ${backPageType}`));
+
+              if (backPageType === 'account_chooser') {
+                console.log(chalk.gray('     2️⃣ "다른 계정 사용" 버튼 클릭 중...'));
+
+                const useAnotherResult = await this.clickUseAnotherAccount(page);
+
+                if (useAnotherResult.success) {
+                  console.log(chalk.green('     ✅ "다른 계정 사용" 클릭 성공!'));
+                  console.log(chalk.green('     ✅ 이메일 입력 페이지로 이동 → CAPTCHA 우회 성공!'));
+
+                  // 페이지 로드 대기
+                  await new Promise(r => setTimeout(r, 2000));
+
+                  // 다음 루프에서 email_input으로 처리됨
+                  continue;
+                } else {
+                  console.log(chalk.yellow('     ⚠️ "다른 계정 사용" 버튼을 찾을 수 없음'));
+                }
+              } else {
+                console.log(chalk.yellow(`     ⚠️ 뒤로가기 후 예상과 다른 페이지: ${backPageType}`));
+              }
+            } catch (backError) {
+              console.log(chalk.red(`     ❌ 우회 시도 실패: ${backError.message}`));
+            }
+
+            // 우회 실패 시 기존 방식 (브라우저 재시작)
+            console.log(chalk.yellow('     → 우회 실패, 브라우저를 닫고 재시도합니다...'));
             return {
               success: false,
               error: 'IMAGE_CAPTCHA_DETECTED',
@@ -882,13 +921,12 @@ class ImprovedAuthenticationService {
   /**
    * 계정 선택 페이지에서 로그인
    *
-   * ⚠️ 중요: 기존 계정 클릭 시 IMAGE CAPTCHA가 발생할 수 있음
-   * → "다른 계정 사용" 클릭으로 이메일 입력 페이지로 이동하여 우회
+   * 기본 전략: 기존 계정 클릭 (빠른 로그인)
+   * IMAGE CAPTCHA 발생 시: image_captcha case에서 "다른 계정 사용" 우회
    */
   async handleAccountChooserLogin(page, credentials, options = {}) {
-    this.log('📧 계정 선택 페이지 처리 (CAPTCHA 우회 모드)', 'info');
-    console.log(chalk.blue(`\n[ImprovedAuth] 📋 계정 선택 페이지 - CAPTCHA 우회 전략 사용`));
-    console.log(chalk.cyan(`  🎯 대상 계정: ${credentials.email}`));
+    this.log('📧 계정 선택 페이지 처리', 'info');
+    console.log(chalk.blue(`\n[ImprovedAuth] 📋 계정 선택: ${credentials.email}`));
 
     try {
       // 스크린샷 (처리 전)
@@ -898,38 +936,6 @@ class ImprovedAuthenticationService {
       } catch (e) {
         // 무시
       }
-
-      // ============================================================
-      // CAPTCHA 우회 전략: "다른 계정 사용" 버튼 먼저 클릭
-      // 기존 계정을 클릭하면 IMAGE CAPTCHA가 발생할 수 있으므로
-      // "다른 계정 사용"을 클릭하여 깨끗한 이메일 입력 페이지로 이동
-      // ============================================================
-      console.log(chalk.yellow(`  🔄 CAPTCHA 우회: "다른 계정 사용" 버튼 클릭 중...`));
-
-      const useAnotherResult = await this.clickUseAnotherAccount(page);
-
-      if (useAnotherResult.success) {
-        console.log(chalk.green(`  ✅ "다른 계정 사용" 클릭 성공!`));
-        console.log(chalk.green(`  ✅ 이메일 입력 페이지로 이동 → CAPTCHA 우회 완료`));
-
-        // 스크린샷 (성공)
-        try {
-          await this.saveScreenshot(page, `account-chooser-use-another-success-${timestamp}.png`);
-        } catch (e) {
-          // 무시
-        }
-
-        // 이메일 입력 페이지로 전환되었으므로 email_input으로 처리하도록 반환
-        return {
-          success: true,
-          redirectToEmailInput: true,
-          message: 'CAPTCHA 우회를 위해 이메일 입력 페이지로 이동'
-        };
-      }
-
-      // "다른 계정 사용" 버튼이 없는 경우 (단일 계정만 있는 페이지 등)
-      console.log(chalk.yellow(`  ⚠️ "다른 계정 사용" 버튼 없음 - 기존 방식으로 시도`));
-      this.log('"다른 계정 사용" 버튼을 찾을 수 없어 기존 방식으로 진행', 'warning');
 
       // 로거 래퍼 생성
       const loggerWrapper = {
@@ -948,7 +954,7 @@ class ImprovedAuthenticationService {
         debug: (message, data) => this.log(message, 'debug')
       };
 
-      // ImprovedAccountChooserHandler 사용 (폴백)
+      // ImprovedAccountChooserHandler 사용
       const accountHandler = new ImprovedAccountChooserHandler(page, {
         debugMode: this.config.debugMode,
         screenshotEnabled: options.screenshotEnabled !== false,
@@ -956,8 +962,8 @@ class ImprovedAuthenticationService {
         logger: loggerWrapper
       });
 
-      // 로그아웃된 계정 클릭 시도 (폴백)
-      console.log(chalk.cyan(`  🔍 계정 "${credentials.email}" 검색 중... (폴백 모드)`));
+      // 로그아웃된 계정 클릭 시도
+      console.log(chalk.cyan(`  🔍 계정 "${credentials.email}" 검색 중...`));
       const handled = await accountHandler.handleAccountChooser(credentials.email);
 
       if (!handled || !handled.success) {
@@ -975,7 +981,7 @@ class ImprovedAuthenticationService {
         return { success: false, error: 'ACCOUNT_NOT_FOUND' };
       }
 
-      console.log(chalk.green(`  ✅ 계정 선택 성공 (폴백 모드)`));
+      console.log(chalk.green(`  ✅ 계정 선택 성공`));
 
       // 스크린샷 (성공 후)
       try {
@@ -2994,13 +3000,45 @@ class ImprovedAuthenticationService {
           'दूसरे खाते का उपयोग करें'
         ];
 
-        // 방법 1: 텍스트로 찾기
+        // ============================================================
+        // 방법 1: li[data-authuser="-1"] - Google 계정 선택기에서 "다른 계정 사용" 버튼
+        // data-authuser="-1"은 새 계정을 의미함
+        // ============================================================
+        const addAccountLi = document.querySelector('li[data-authuser="-1"]');
+        if (addAccountLi) {
+          const rect = addAccountLi.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            console.log('✅ "다른 계정 사용" 버튼 발견 (data-authuser="-1")');
+            return {
+              found: true,
+              x: rect.x + rect.width / 2,
+              y: rect.y + rect.height / 2,
+              selector: 'li[data-authuser="-1"]',
+              text: '다른 계정 사용'
+            };
+          }
+        }
+
+        // ============================================================
+        // 방법 2: 텍스트로 찾기 (기존 계정 제외)
+        // data-identifier가 없는 요소 중에서 버튼 텍스트를 찾음
+        // ============================================================
         for (const text of buttonTexts) {
-          // 모든 요소 검색
+          // 모든 요소 검색 (정확한 일치 우선)
           const elements = Array.from(document.querySelectorAll('*')).filter(el => {
             const elText = el.textContent?.trim();
-            return elText && (elText === text || elText.includes(text)) &&
-                   el.offsetHeight > 0 && el.offsetWidth > 0;
+            // 정확한 일치 또는 포함 여부 확인
+            if (!elText || elText.length > 100) return false; // 긴 텍스트는 제외
+            if (elText !== text && !elText.includes(text)) return false;
+            if (el.offsetHeight <= 0 || el.offsetWidth <= 0) return false;
+
+            // 기존 계정 요소 제외 (data-identifier가 있는 요소)
+            const parent = el.closest('[data-identifier]') ||
+                          el.closest('[data-identifier-logged-in]') ||
+                          el.closest('[data-identifier-logged-out]');
+            if (parent) return false;
+
+            return true;
           });
 
           for (const element of elements) {
@@ -3013,22 +3051,20 @@ class ImprovedAuthenticationService {
                             element;
 
             if (clickable) {
+              // 다시 한번 기존 계정 제외
+              const isAccount = clickable.hasAttribute('data-identifier') ||
+                               clickable.hasAttribute('data-identifier-logged-in') ||
+                               clickable.hasAttribute('data-identifier-logged-out');
+              if (isAccount) continue;
+
               const rect = clickable.getBoundingClientRect();
               if (rect.width > 0 && rect.height > 0) {
-                // 선택자 생성
-                let selector = null;
-                if (clickable.id) {
-                  selector = `#${clickable.id}`;
-                } else if (clickable.getAttribute('data-identifier')) {
-                  selector = `[data-identifier="${clickable.getAttribute('data-identifier')}"]`;
-                }
-
                 console.log(`✅ "다른 계정 사용" 버튼 발견: ${text}`);
                 return {
                   found: true,
                   x: rect.x + rect.width / 2,
                   y: rect.y + rect.height / 2,
-                  selector: selector,
+                  selector: null,
                   text: text
                 };
               }
@@ -3036,24 +3072,25 @@ class ImprovedAuthenticationService {
           }
         }
 
-        // 방법 2: SVG 아이콘 + 텍스트로 찾기 (Google의 계정 추가 버튼 구조)
-        const addAccountIcon = document.querySelector('[data-identifier]');
-        if (addAccountIcon) {
-          // 계정 추가 버튼은 보통 목록 마지막에 있음
-          const listItems = document.querySelectorAll('li, [role="link"], [role="button"]');
-          for (const item of listItems) {
-            const text = item.textContent || '';
-            if (buttonTexts.some(btn => text.includes(btn))) {
-              const rect = item.getBoundingClientRect();
-              if (rect.width > 0 && rect.height > 0) {
-                return {
-                  found: true,
-                  x: rect.x + rect.width / 2,
-                  y: rect.y + rect.height / 2,
-                  selector: null,
-                  text: '다른 계정 사용'
-                };
-              }
+        // ============================================================
+        // 방법 3: 계정 목록에서 이메일이 아닌 항목 찾기
+        // 계정 선택 페이지의 목록에서 @가 없는 항목이 "다른 계정 사용"일 가능성 높음
+        // ============================================================
+        const listItems = document.querySelectorAll('ul li');
+        for (const item of listItems) {
+          const text = item.textContent?.trim() || '';
+          // 이메일(@)이 없고, 버튼 텍스트 중 하나를 포함하는 항목
+          if (!text.includes('@') && buttonTexts.some(btn => text.includes(btn))) {
+            const rect = item.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              console.log('✅ "다른 계정 사용" 버튼 발견 (리스트 항목)');
+              return {
+                found: true,
+                x: rect.x + rect.width / 2,
+                y: rect.y + rect.height / 2,
+                selector: null,
+                text: '다른 계정 사용'
+              };
             }
           }
         }
@@ -3082,8 +3119,33 @@ class ImprovedAuthenticationService {
         await page.mouse.click(buttonInfo.x, buttonInfo.y);
       }
 
-      // 페이지 전환 대기
-      await new Promise(r => setTimeout(r, 2000));
+      // 페이지 전환 대기 및 모니터링 (최대 5초)
+      const startUrl = page.url();
+      let pageChanged = false;
+
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        const currentUrl = page.url();
+
+        // URL 변경 감지
+        if (currentUrl !== startUrl) {
+          this.log(`URL 변경 감지: ${currentUrl.substring(0, 50)}...`, 'debug');
+          pageChanged = true;
+          break;
+        }
+
+        // 이메일 입력 필드 존재 확인
+        const hasEmailInput = await page.evaluate(() => {
+          const emailInput = document.querySelector('input[type="email"], input#identifierId');
+          return emailInput && emailInput.offsetHeight > 0;
+        });
+
+        if (hasEmailInput) {
+          this.log('이메일 입력 필드 감지됨', 'debug');
+          pageChanged = true;
+          break;
+        }
+      }
 
       // 페이지 전환 확인
       const currentUrl = page.url();
@@ -3092,8 +3154,10 @@ class ImprovedAuthenticationService {
       this.log(`클릭 후 페이지 타입: ${pageType}`, 'debug');
 
       // email_input 또는 identifier 페이지로 전환되었는지 확인
-      if (pageType === 'email_input' ||
+      if (pageChanged ||
+          pageType === 'email_input' ||
           currentUrl.includes('identifier') ||
+          currentUrl.includes('signin/identifier') ||
           pageType !== 'account_chooser') {
         this.log('✅ "다른 계정 사용" 클릭 성공 - 이메일 입력 페이지로 전환됨', 'success');
         return { success: true, pageType };
