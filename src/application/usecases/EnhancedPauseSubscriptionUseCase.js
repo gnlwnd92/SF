@@ -2508,12 +2508,15 @@ class EnhancedPauseSubscriptionUseCase {
           for (const element of elements) {
             if (element.offsetHeight > 0 && element.offsetWidth > 0) {
               const text = element.textContent || '';
-              // 팝업 내용 확인 (더 넓은 키워드)
-              if (text.includes('Pause') || text.includes('일시중지') || 
+              // 팝업 내용 확인 (더 넓은 키워드 - 다국어 지원)
+              if (text.includes('Pause') || text.includes('일시중지') ||
                   text.includes('membership') || text.includes('멤버십') ||
                   text.includes('subscription') || text.includes('구독') ||
                   text.includes('billing') || text.includes('결제') ||
-                  text.includes('YouTube Premium')) {
+                  text.includes('YouTube Premium') ||
+                  // 러시아어 키워드
+                  text.includes('Приостановить') || text.includes('подписк') ||
+                  text.includes('перерыва') || text.includes('месяц')) {
                 console.log('팝업 발견:', selector, '- 내용 길이:', text.length);
                 return true;
               }
