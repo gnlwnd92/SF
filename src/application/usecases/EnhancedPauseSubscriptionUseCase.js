@@ -189,6 +189,12 @@ class EnhancedPauseSubscriptionUseCase {
         maxRetries: 3
       });
 
+      // 휴먼라이크 헬퍼 초기화 (베지어 곡선 + CDP 네이티브 입력)
+      if (this.authService && this.authService.humanLikeMotion) {
+        await this.authService.initializeHumanLikeHelpers(this.page);
+        this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
+      }
+
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.endStep({ pageNavigated: true });
       }

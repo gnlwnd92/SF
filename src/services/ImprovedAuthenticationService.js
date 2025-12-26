@@ -11,6 +11,9 @@ const crypto = require('crypto');
 const speakeasy = require('speakeasy');
 const ImprovedAccountChooserHandler = require('./ImprovedAccountChooserHandler');
 const AntiCaptchaService = require('./AntiCaptchaService');
+// 휴먼라이크 인터랙션 모듈
+const HumanLikeMouseHelper = require('../infrastructure/adapters/HumanLikeMouseHelper');
+const CDPClickHelper = require('../infrastructure/adapters/CDPClickHelper');
 
 class ImprovedAuthenticationService {
   constructor(config = {}) {
@@ -37,7 +40,101 @@ class ImprovedAuthenticationService {
       debugMode: this.config.debugMode
     });
 
+    // 휴먼라이크 인터랙션 헬퍼 (페이지 연결 후 초기화)
+    this.humanLikeMotion = config.humanLikeMotion || false;
+    this.mouseHelper = null;
+    this.cdpHelper = null;
+
     this.log('✅ ImprovedAuthenticationService 초기화 완료', 'success');
+  }
+
+  /**
+   * 휴먼라이크 헬퍼 초기화 (페이지 연결 후 호출)
+   * @param {Page} page - Puppeteer 페이지 객체
+   */
+  async initializeHumanLikeHelpers(page) {
+    if (!this.humanLikeMotion) {
+      this.log('휴먼라이크 모션 비활성화됨', 'debug');
+      return;
+    }
+
+    try {
+      // HumanLikeMouseHelper 초기화
+      this.mouseHelper = new HumanLikeMouseHelper(page, {
+        debugMode: this.config.debugMode,
+        jitterAmount: 3,        // 손떨림 정도 (픽셀)
+        moveSpeed: 'normal',    // slow, normal, fast
+        mouseMoveSteps: 20      // 이동 단계 수
+      });
+
+      // CDPClickHelper 초기화 (CDP 세션 필요)
+      this.cdpHelper = new CDPClickHelper(page, {
+        verbose: this.config.debugMode,
+        naturalDelay: true      // 자연스러운 클릭 지연
+      });
+      await this.cdpHelper.initialize();
+
+      this.log('✅ 휴먼라이크 헬퍼 초기화 완료 (베지어 곡선 + CDP 네이티브 입력)', 'success');
+    } catch (error) {
+      this.log(`⚠️ 휴먼라이크 헬퍼 초기화 실패: ${error.message}`, 'warning');
+      // 실패해도 폴백으로 계속 진행
+      this.mouseHelper = null;
+      this.cdpHelper = null;
+    }
+  }
+
+  /**
+   * 휴먼라이크 마우스 이동 및 클릭 (통합 헬퍼)
+   * @param {Page} page - Puppeteer 페이지 객체
+   * @param {number} x - 클릭할 X 좌표
+   * @param {number} y - 클릭할 Y 좌표
+   * @param {Object} options - 옵션 (randomOffset, preDelay, postDelay)
+   */
+  async humanLikeMoveAndClick(page, x, y, options = {}) {
+    const {
+      randomOffset = 4,        // 좌표 랜덤화 범위 (±px)
+      preDelay = true,         // 클릭 전 랜덤 대기
+      postDelay = true         // 클릭 후 랜덤 대기
+    } = options;
+
+    // 1️⃣ 클릭 전 랜덤 대기
+    if (preDelay) {
+      await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
+    }
+
+    // 2️⃣ 좌표 랜덤화
+    const finalX = x + (Math.random() - 0.5) * randomOffset * 2;
+    const finalY = y + (Math.random() - 0.5) * randomOffset * 2;
+
+    // 3️⃣ 마우스 이동 (휴먼라이크 베지어 또는 폴백)
+    if (this.mouseHelper) {
+      await this.mouseHelper.moveMouseHumanLike(finalX, finalY);
+    } else {
+      // 폴백: 기존 3단계 선형 이동
+      const currentPosition = await page.evaluate(() => ({ x: 0, y: 0 }));
+      const steps = 3;
+
+      for (let i = 1; i <= steps; i++) {
+        const progress = i / steps;
+        const intermediateX = currentPosition.x + (finalX - currentPosition.x) * progress;
+        const intermediateY = currentPosition.y + (finalY - currentPosition.y) * progress;
+
+        await page.mouse.move(intermediateX, intermediateY);
+        await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+      }
+    }
+
+    // 4️⃣ 클릭 (CDP 네이티브 또는 폴백)
+    if (this.cdpHelper) {
+      await this.cdpHelper.clickAtCoordinates(finalX, finalY);
+    } else {
+      await page.mouse.click(finalX, finalY);
+    }
+
+    // 5️⃣ 클릭 후 랜덤 대기
+    if (postDelay) {
+      await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
+    }
   }
 
   /**
@@ -1570,22 +1667,35 @@ class ImprovedAuthenticationService {
           const finalX = button.x + randomOffsetX;
           const finalY = button.y + randomOffsetY;
 
-          // 3️⃣ 마우스 점진적 이동 (3단계)
-          const currentPosition = await page.evaluate(() => ({ x: 0, y: 0 }));
-          const steps = 3;
+          // 3️⃣ 마우스 이동 (휴먼라이크 베지어 곡선 또는 폴백)
+          if (this.mouseHelper) {
+            // ✅ 베지어 곡선 이동 (손떨림 + 가속/감속)
+            await this.mouseHelper.moveMouseHumanLike(finalX, finalY);
+            this.log(`🖱️ 베지어 곡선 마우스 이동 완료 (x: ${Math.round(finalX)}, y: ${Math.round(finalY)})`, 'debug');
+          } else {
+            // 폴백: 기존 3단계 선형 이동
+            const currentPosition = await page.evaluate(() => ({ x: 0, y: 0 }));
+            const steps = 3;
 
-          for (let i = 1; i <= steps; i++) {
-            const progress = i / steps;
-            const intermediateX = currentPosition.x + (finalX - currentPosition.x) * progress;
-            const intermediateY = currentPosition.y + (finalY - currentPosition.y) * progress;
+            for (let i = 1; i <= steps; i++) {
+              const progress = i / steps;
+              const intermediateX = currentPosition.x + (finalX - currentPosition.x) * progress;
+              const intermediateY = currentPosition.y + (finalY - currentPosition.y) * progress;
 
-            await page.mouse.move(intermediateX, intermediateY);
-            await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+              await page.mouse.move(intermediateX, intermediateY);
+              await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+            }
           }
 
-          // 4️⃣ 최종 클릭
+          // 4️⃣ 최종 클릭 (CDP 네이티브 또는 폴백)
           this.log(`🖱️ 사람처럼 클릭 중... 시도 ${attempt}/3 (x: ${Math.round(finalX)}, y: ${Math.round(finalY)})`, 'debug');
-          await page.mouse.click(finalX, finalY);
+          if (this.cdpHelper) {
+            // ✅ CDP 네이티브 클릭 (자동화 탐지 우회)
+            await this.cdpHelper.clickAtCoordinates(finalX, finalY);
+          } else {
+            // 폴백: Puppeteer 클릭
+            await page.mouse.click(finalX, finalY);
+          }
 
           // 5️⃣ 클릭 후 자연스러운 일시정지
           const postClickDelay = 300 + Math.random() * 200;

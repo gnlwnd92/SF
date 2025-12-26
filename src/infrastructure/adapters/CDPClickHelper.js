@@ -121,6 +121,71 @@ class CDPClickHelper {
     }
 
     /**
+     * CDP를 통한 좌표 기반 네이티브 클릭
+     * @param {number} x - X 좌표
+     * @param {number} y - Y 좌표
+     * @returns {boolean} 성공 여부
+     */
+    async clickAtCoordinates(x, y) {
+        try {
+            await this.initialize();
+
+            if (this.options.verbose) {
+                console.log(chalk.gray(`  CDP 좌표 클릭: (${Math.round(x)}, ${Math.round(y)})`));
+            }
+
+            // 1. 마우스 이동 (호버 효과)
+            await this.client.send('Input.dispatchMouseEvent', {
+                type: 'mouseMoved',
+                x: x,
+                y: y
+            });
+
+            // 자연스러운 호버 지연
+            if (this.options.naturalDelay) {
+                await new Promise(r => setTimeout(r, 100 + Math.random() * 100));
+            }
+
+            // 2. 마우스 버튼 누르기
+            await this.client.send('Input.dispatchMouseEvent', {
+                type: 'mousePressed',
+                x: x,
+                y: y,
+                button: 'left',
+                clickCount: 1,
+                buttons: 1
+            });
+
+            // 클릭 유지 시간 (사람처럼)
+            if (this.options.naturalDelay) {
+                await new Promise(r => setTimeout(r, 50 + Math.random() * 50));
+            }
+
+            // 3. 마우스 버튼 떼기
+            await this.client.send('Input.dispatchMouseEvent', {
+                type: 'mouseReleased',
+                x: x,
+                y: y,
+                button: 'left',
+                clickCount: 1,
+                buttons: 0
+            });
+
+            if (this.options.verbose) {
+                console.log(chalk.green(`  ✓ CDP 좌표 클릭 완료`));
+            }
+
+            return true;
+
+        } catch (error) {
+            if (this.options.verbose) {
+                console.log(chalk.red(`  CDP 좌표 클릭 오류: ${error.message}`));
+            }
+            return false;
+        }
+    }
+
+    /**
      * CDP를 통한 텍스트 입력
      * @param {string} selector - CSS 선택자
      * @param {string} text - 입력할 텍스트

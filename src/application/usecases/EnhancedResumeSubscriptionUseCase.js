@@ -215,6 +215,12 @@ class EnhancedResumeSubscriptionUseCase {
       const checkShouldSkip = () => shouldSkipProfile;
       await this.navigateToPremiumPage(browser, updateProgress, checkShouldSkip);
 
+      // 휴먼라이크 헬퍼 초기화 (베지어 곡선 + CDP 네이티브 입력)
+      if (this.authService && this.authService.humanLikeMotion) {
+        await this.authService.initializeHumanLikeHelpers(this.page);
+        this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
+      }
+
       // 페이지 이동 완료 후 진행 상황 업데이트
       updateProgress('Premium 페이지 이동 완료');
       console.log(chalk.green('✅ Premium 페이지 이동 완료\n'));
