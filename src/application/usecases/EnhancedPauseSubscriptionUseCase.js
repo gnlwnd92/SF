@@ -2714,29 +2714,35 @@ class EnhancedPauseSubscriptionUseCase {
           /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}/gi,
           /\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December)/gi,
           /\d{1,2}\/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)/gi,
-          
+
           // 베트남어 YouTube 형식
           /\d{1,2}\s+thg\s+\d{1,2}/g,
           // 베트남어 표준
           /\d{1,2}\s+tháng\s+\d{1,2}/g,
-          
-          // 한국어
+
+          // 한국어 - 다양한 형식
           /\d{1,2}월\s*\d{1,2}일/g,
           /\d{4}년\s*\d{1,2}월\s*\d{1,2}일/g,
-          
+          // 한국어 - 점 구분 형식 (2026. 1. 26. 또는 2026. 2. 26.)
+          /\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?/g,
+
           // 터키어
           /\d{1,2}\s+(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)/gi,
           /\d{1,2}\s+(Oca|Şub|Mar|Nis|May|Haz|Tem|Ağu|Eyl|Eki|Kas|Ara)/gi,
           /(Oca|Şub|Mar|Nis|May|Haz|Tem|Ağu|Eyl|Eki|Kas|Ara)\s+\d{1,2}/gi,
           /\d{1,2}\s+(Oca|Şub|Mar|Nis|May|Haz|Tem|Ağu|Eyl|Eki|Kas|Ara)\s+\d{4}/gi,
-          
-          // 러시아어
+
+          // 러시아어 - 전체 월명
           /\d{1,2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/gi,
-          
+          // 러시아어 - 약어 형식 (26 янв. 2026г., 26 февр. 2026г.)
+          /\d{1,2}\s+(янв|февр|мар|апр|мая|июн|июл|авг|сен|окт|ноя|дек)\.?\s*\d{4}\s*г?\.?/gi,
+          // 러시아어 - 약어만 (янв., февр. 등)
+          /\d{1,2}\s+(янв|февр|мар|апр|мая|июн|июл|авг|сен|окт|ноя|дек)\.?/gi,
+
           // 포르투갈어 - 일시정지 날짜 패턴
           /após\s+(\d{1,2}\/\d{1,2})(?!\/)/gi,  // "após 4/10" 패턴
           /retomada\s+a\s+(\d{1,2}\/\d{1,2}\/\d{4})/gi,  // "retomada a 04/11/2025" 패턴
-          
+
           // 숫자 날짜 형식 (fallback)
           /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,
           /\b\d{4}-\d{2}-\d{2}\b/g,
