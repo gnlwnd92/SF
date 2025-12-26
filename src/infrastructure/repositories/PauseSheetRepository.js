@@ -1488,7 +1488,7 @@ class PauseSheetRepository {
       await this.sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: this.spreadsheetId,
         resource: {
-          valueInputOption: 'RAW',
+          valueInputOption: 'USER_ENTERED',  // 날짜가 Google Sheets 날짜 형식으로 인식됨
           data: updateData
         }
       });
@@ -1546,7 +1546,7 @@ class PauseSheetRepository {
       await this.sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: this.spreadsheetId,
         resource: {
-          valueInputOption: 'RAW',
+          valueInputOption: 'USER_ENTERED',  // 날짜가 Google Sheets 날짜 형식으로 인식됨
           data: updateData
         }
       });
@@ -1603,7 +1603,7 @@ class PauseSheetRepository {
       await this.sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: this.spreadsheetId,
         resource: {
-          valueInputOption: 'RAW',
+          valueInputOption: 'USER_ENTERED',  // 날짜가 Google Sheets 날짜 형식으로 인식됨
           data: updateData
         }
       });
