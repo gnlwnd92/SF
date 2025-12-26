@@ -436,13 +436,19 @@ class ScheduledSubscriptionWorkerUseCase {
    * 실제 작업 실행 (일시중지 또는 결제재개)
    */
   async executeTask(task, adsPowerId, type, debugMode) {
+    // TOTP 코드 값 (D열)
+    const totpValue = task.totpCode || task.code || '';
+
     const options = {
       profileData: {
         email: task.email,
         googleId: task.googleId,
         password: task.password,
         recoveryEmail: task.recoveryEmail,
-        totpCode: task.totpCode || task.code
+        // 단일 UseCase들이 code 또는 totpSecret 필드명을 사용하므로 둘 다 설정
+        code: totpValue,
+        totpSecret: totpValue,
+        totpCode: totpValue  // 기존 호환성 유지
       },
       debugMode
     };
