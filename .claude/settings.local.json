@@ -15,7 +15,31 @@
       "Bash(cat:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nv2.3: Browser cleanup fix & CLAUDE.md update\n\n- Fix stale WebSocket connection on retry \\(ECONNREFUSED\\)\n- Add explicit browser closing before retry in EnterpriseCLI.js\n- Update CLAUDE.md with new commands and patterns\n- Update settings.local.json\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git remote set-url:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd Pause/Resume workflow documentation and selectors\n\n- Add comprehensive workflow plan for GYN project implementation\n- Add multi-language selectors \\(en, ko, ja\\) for pause/resume\n- Include HumanMouseMover, error handling, date parsing specs\n- Document CDP + physical input integration patterns\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd Pause/Resume workflow documentation and selectors\n\n- Add comprehensive workflow plan for GYN project implementation\n- Add multi-language selectors \\(en, ko, ja\\) for pause/resume\n- Include HumanMouseMover, error handling, date parsing specs\n- Document CDP + physical input integration patterns\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git fetch:*)",
+      "Bash(claude mcp list:*)",
+      "Bash(node --version:*)",
+      "Bash(npm --version:*)",
+      "Bash(npx --version:*)",
+      "Bash(npm ping:*)",
+      "Bash(npx:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd /c \"taskkill /f /im node.exe\")",
+      "Bash(powershell -Command:*)",
+      "Bash(dir:*)",
+      "mcp__filesystem__list_directory",
+      "Skill(brainstorming)",
+      "Bash(node check-sheet-i-column.js:*)",
+      "Bash(del \"C:\\\\Users\\\\admin\\\\OneDrive\\\\바탕 화면\\\\바탕화면 정리 폴더\\\\SF\\\\check-sheet-i-column.js\")",
+      "mcp__sequential-thinking__sequentialthinking",
+      "mcp__filesystem__write_file",
+      "Bash(find:*)",
+      "Bash(where:*)",
+      "mcp__filesystem__edit_file",
+      "Bash(node:*)"
     ]
   }
 }

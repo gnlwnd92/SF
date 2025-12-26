@@ -141,7 +141,17 @@ class EnhancedButtonInteractionService {
                 'ytd-button-renderer button',  // YouTube Desktop 버튼 렌더러
                 'yt-button-shape button',       // 최신 YouTube 버튼 구조
                 'tp-yt-paper-button',
-                'paper-button'
+                'paper-button',
+                // 드롭다운/확장 가능한 버튼 구조
+                'ytd-toggle-button-renderer',
+                'ytd-menu-renderer button',
+                'yt-icon-button',
+                '[aria-expanded]',
+                'div[tabindex="0"]',
+                'span[tabindex="0"]',
+                '#expand',
+                '.expand-button',
+                'ytd-expander'
               ];
 
               const buttons = document.querySelectorAll(selectors.join(', '));
@@ -191,7 +201,17 @@ class EnhancedButtonInteractionService {
             'ytd-button-renderer button',  // YouTube Desktop 버튼 렌더러
             'yt-button-shape button',       // 최신 YouTube 버튼 구조
             'tp-yt-paper-button',
-            'paper-button'
+            'paper-button',
+            // 드롭다운/확장 가능한 버튼 구조
+            'ytd-toggle-button-renderer',
+            'ytd-menu-renderer button',
+            'yt-icon-button',
+            '[aria-expanded]',
+            'div[tabindex="0"]',
+            'span[tabindex="0"]',
+            '#expand',
+            '.expand-button',
+            'ytd-expander'
           ];
 
           const buttons = document.querySelectorAll(selectors.join(', '));

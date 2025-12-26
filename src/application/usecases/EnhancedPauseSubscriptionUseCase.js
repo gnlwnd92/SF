@@ -2046,13 +2046,23 @@ class EnhancedPauseSubscriptionUseCase {
     if (!alreadyInManagementPage) {
       this.log('멤버십 관리 페이지가 아님, 멤버십 관리 버튼 클릭 필요', 'info');
       
-      // "멤버십 관리" 버튼 찾기 및 클릭
+      // "멤버십 관리" 버튼 찾기 및 클릭 (드롭다운/확장 버튼 포함)
       const manageButtonSelectors = [
         'button:has-text("멤버십 관리")',
         'button:has-text("Manage membership")',
         '[aria-label*="멤버십 관리"]',
         '[aria-label*="Manage membership"]',
-        'ytd-button-renderer button'
+        'ytd-button-renderer button',
+        // 드롭다운/확장 가능한 버튼 구조
+        'ytd-toggle-button-renderer',
+        '[aria-expanded]',
+        'div[tabindex="0"]',
+        'span[tabindex="0"]',
+        '#expand',
+        '.expand-button',
+        'ytd-expander',
+        'yt-button-shape button',
+        'ytd-menu-renderer button'
       ];
       
       for (const selector of manageButtonSelectors) {
@@ -2076,9 +2086,21 @@ class EnhancedPauseSubscriptionUseCase {
       }
       
       if (!manageButtonClicked) {
-        // CSS 선택자로 못 찾으면 evaluate로 직접 찾기
+        // CSS 선택자로 못 찾으면 evaluate로 직접 찾기 (드롭다운/확장 버튼 포함)
         const clicked = await this.page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll('button, tp-yt-paper-button'));
+          // 확대된 선택자 목록
+          const selectors = [
+            'button',
+            'tp-yt-paper-button',
+            '[role="button"]',
+            'ytd-button-renderer',
+            'yt-button-shape button',
+            'ytd-toggle-button-renderer',
+            '[aria-expanded]',
+            'div[tabindex="0"]',
+            'span[tabindex="0"]'
+          ];
+          const buttons = Array.from(document.querySelectorAll(selectors.join(', ')));
           for (const btn of buttons) {
             const text = btn.textContent || btn.innerText;
             if (text && (text.includes('멤버십 관리') || text.includes('Manage membership') ||
