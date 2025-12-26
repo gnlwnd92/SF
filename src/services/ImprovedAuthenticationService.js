@@ -881,10 +881,14 @@ class ImprovedAuthenticationService {
 
   /**
    * 계정 선택 페이지에서 로그인
+   *
+   * ⚠️ 중요: 기존 계정 클릭 시 IMAGE CAPTCHA가 발생할 수 있음
+   * → "다른 계정 사용" 클릭으로 이메일 입력 페이지로 이동하여 우회
    */
   async handleAccountChooserLogin(page, credentials, options = {}) {
-    this.log('📧 계정 선택 페이지 처리', 'info');
-    console.log(chalk.blue(`\n[ImprovedAuth] 📋 계정 선택: ${credentials.email}`));
+    this.log('📧 계정 선택 페이지 처리 (CAPTCHA 우회 모드)', 'info');
+    console.log(chalk.blue(`\n[ImprovedAuth] 📋 계정 선택 페이지 - CAPTCHA 우회 전략 사용`));
+    console.log(chalk.cyan(`  🎯 대상 계정: ${credentials.email}`));
 
     try {
       // 스크린샷 (처리 전)
@@ -894,6 +898,38 @@ class ImprovedAuthenticationService {
       } catch (e) {
         // 무시
       }
+
+      // ============================================================
+      // CAPTCHA 우회 전략: "다른 계정 사용" 버튼 먼저 클릭
+      // 기존 계정을 클릭하면 IMAGE CAPTCHA가 발생할 수 있으므로
+      // "다른 계정 사용"을 클릭하여 깨끗한 이메일 입력 페이지로 이동
+      // ============================================================
+      console.log(chalk.yellow(`  🔄 CAPTCHA 우회: "다른 계정 사용" 버튼 클릭 중...`));
+
+      const useAnotherResult = await this.clickUseAnotherAccount(page);
+
+      if (useAnotherResult.success) {
+        console.log(chalk.green(`  ✅ "다른 계정 사용" 클릭 성공!`));
+        console.log(chalk.green(`  ✅ 이메일 입력 페이지로 이동 → CAPTCHA 우회 완료`));
+
+        // 스크린샷 (성공)
+        try {
+          await this.saveScreenshot(page, `account-chooser-use-another-success-${timestamp}.png`);
+        } catch (e) {
+          // 무시
+        }
+
+        // 이메일 입력 페이지로 전환되었으므로 email_input으로 처리하도록 반환
+        return {
+          success: true,
+          redirectToEmailInput: true,
+          message: 'CAPTCHA 우회를 위해 이메일 입력 페이지로 이동'
+        };
+      }
+
+      // "다른 계정 사용" 버튼이 없는 경우 (단일 계정만 있는 페이지 등)
+      console.log(chalk.yellow(`  ⚠️ "다른 계정 사용" 버튼 없음 - 기존 방식으로 시도`));
+      this.log('"다른 계정 사용" 버튼을 찾을 수 없어 기존 방식으로 진행', 'warning');
 
       // 로거 래퍼 생성
       const loggerWrapper = {
@@ -912,7 +948,7 @@ class ImprovedAuthenticationService {
         debug: (message, data) => this.log(message, 'debug')
       };
 
-      // ImprovedAccountChooserHandler 사용
+      // ImprovedAccountChooserHandler 사용 (폴백)
       const accountHandler = new ImprovedAccountChooserHandler(page, {
         debugMode: this.config.debugMode,
         screenshotEnabled: options.screenshotEnabled !== false,
@@ -920,8 +956,8 @@ class ImprovedAuthenticationService {
         logger: loggerWrapper
       });
 
-      // 로그아웃된 계정 클릭 시도
-      console.log(chalk.cyan(`  🔍 계정 "${credentials.email}" 검색 중...`));
+      // 로그아웃된 계정 클릭 시도 (폴백)
+      console.log(chalk.cyan(`  🔍 계정 "${credentials.email}" 검색 중... (폴백 모드)`));
       const handled = await accountHandler.handleAccountChooser(credentials.email);
 
       if (!handled || !handled.success) {
@@ -939,7 +975,7 @@ class ImprovedAuthenticationService {
         return { success: false, error: 'ACCOUNT_NOT_FOUND' };
       }
 
-      console.log(chalk.green(`  ✅ 계정 선택 성공`));
+      console.log(chalk.green(`  ✅ 계정 선택 성공 (폴백 모드)`));
 
       // 스크린샷 (성공 후)
       try {
@@ -2911,17 +2947,51 @@ class ImprovedAuthenticationService {
       const buttonInfo = await page.evaluate(() => {
         // 다양한 언어로 "다른 계정 사용" 버튼 텍스트
         const buttonTexts = [
+          // 한국어
           '다른 계정 사용',
+          '계정 추가',
+          // 영어
           'Use another account',
           'Add another account',
-          '계정 추가',
+          'Sign in with a different account',
+          // 러시아어
+          'Использовать другой аккаунт',
+          'Добавить аккаунт',
+          'Войти в другой аккаунт',
+          'Другой аккаунт',
+          // 일본어
           '別のアカウントを使用',
+          '別のアカウントを追加',
+          // 중국어 (번체/간체)
           '使用其他帳戶',
+          '使用其他账户',
+          '添加帐户',
+          // 스페인어
           'Usar otra cuenta',
+          'Añadir otra cuenta',
+          // 프랑스어
           'Utiliser un autre compte',
+          'Ajouter un compte',
+          // 이탈리아어
           'Usa un altro account',
+          // 독일어
           'Verwende ein anderes Konto',
-          'Use outra conta'
+          'Anderes Konto verwenden',
+          // 포르투갈어
+          'Use outra conta',
+          'Usar outra conta',
+          // 태국어
+          'ใช้บัญชีอื่น',
+          // 베트남어
+          'Sử dụng tài khoản khác',
+          // 인도네시아어
+          'Gunakan akun lain',
+          // 말레이시아어
+          'Gunakan akaun lain',
+          // 아랍어
+          'استخدام حساب آخر',
+          // 힌디어
+          'दूसरे खाते का उपयोग करें'
         ];
 
         // 방법 1: 텍스트로 찾기
