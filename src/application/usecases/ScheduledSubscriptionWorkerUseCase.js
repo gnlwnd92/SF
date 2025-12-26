@@ -259,6 +259,9 @@ class ScheduledSubscriptionWorkerUseCase {
         const newStatus = type === 'resume' ? '결제중' : '일시중지';
         const resultText = this.formatResultText(type, true, result);
 
+        // 무한루프 감지를 위해 기존 H열 내용 조회 (업데이트 전)
+        const existingResult = await this.sheetsRepository.getIntegratedWorkerResultValue(rowIndex);
+
         await this.sheetsRepository.updateIntegratedWorkerOnSuccess(rowIndex, {
           newStatus,
           resultText,
@@ -289,6 +292,15 @@ class ScheduledSubscriptionWorkerUseCase {
         // 대체 ID로 성공한 경우 알림
         if (usedProfileId && usedProfileId !== adsPowerId) {
           this.log(chalk.cyan(`     ℹ️ 대체 ID 사용: ${usedProfileId}`));
+        }
+
+        // 무한루프 감지: 동일 작업 성공이 3회 이상이면 상태 변경
+        // (기존 결과 + 방금 추가한 결과를 합쳐서 체크)
+        const combinedResult = existingResult ? `${existingResult}\n${resultText}` : resultText;
+        if (this.checkInfiniteLoop(combinedResult, type)) {
+          await this.sheetsRepository.updateIntegratedWorkerStatus(rowIndex, '수동체크-무한루프');
+          this.log(chalk.red(`     🔄 무한루프 감지! E열 상태를 "수동체크-무한루프"로 변경`));
+          this.log(chalk.gray(`     ℹ️ 이 계정은 수동으로 확인 후 상태를 변경해주세요`));
         }
 
       } else {
@@ -604,6 +616,36 @@ class ScheduledSubscriptionWorkerUseCase {
    */
   delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 무한루프 감지 - H열 결과에서 동일 작업 성공이 3회 이상인지 확인
+   *
+   * 감지 기준:
+   * - "일시중지" + ("신규성공" 또는 "이미완료")가 3회 이상 → 무한루프
+   * - "재개" + ("신규성공" 또는 "이미완료")가 3회 이상 → 무한루프
+   *
+   * @param {string} existingResult - 기존 H열 내용
+   * @param {string} type - 'pause' 또는 'resume'
+   * @returns {boolean} 무한루프 감지 시 true
+   */
+  checkInfiniteLoop(existingResult, type) {
+    if (!existingResult) return false;
+
+    // 성공 패턴 (신규성공 또는 이미완료 모두 포함)
+    const successPattern = type === 'pause'
+      ? /일시중지[^|]*(?:신규성공|이미완료)/g
+      : /재개[^|]*(?:신규성공|이미완료)/g;
+
+    const matches = existingResult.match(successPattern);
+    const count = matches ? matches.length : 0;
+
+    if (count >= 3) {
+      this.log(chalk.yellow(`     ⚠️ 동일 작업 성공 ${count}회 감지 (임계값: 3회)`));
+      return true;
+    }
+
+    return false;
   }
 
   /**

@@ -3166,7 +3166,7 @@ class EnterpriseCLI {
           type: 'number',
           name: 'resumeMinutesBefore',
           message: '결제재개 기준 (결제 전 M분):',
-          default: 10,
+          default: 60,
           validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
         },
         {
