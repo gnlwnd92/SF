@@ -424,15 +424,15 @@ class EnhancedButtonInteractionService {
         }
 
         // ========== 4. 추가 만료 지표 확인 ==========
+        // 주의: "No purchases" / "구입한 항목이 없습니다"는 디지털 콘텐츠 구매 섹션의 메시지로
+        // Premium 구독 상태와 무관하므로 만료 지표에서 제외
         const additionalExpiredTexts = [
           'Your membership has expired',
           '멤버십이 만료되었습니다',
           '구독이 만료되었습니다',
           'Expired',
           '만료됨',
-          '만료된 멤버십',
-          'No purchases',
-          '구입한 항목이 없습니다'
+          '만료된 멤버십'
         ];
         let hasAdditionalExpiredText = false;
         let detectedAdditionalText = null;

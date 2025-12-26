@@ -2335,13 +2335,14 @@ class EnhancedResumeSubscriptionUseCase {
       }
 
       // Step 2: 만료 상태 텍스트 확인
+      // 주의: "No purchases" / "구입한 항목이 없습니다"는 디지털 콘텐츠 구매 섹션의 메시지로
+      // Premium 구독 상태와 무관하므로 만료 지표에서 제외
       const expiredTexts = [
         // 한국어 만료 지표
         '혜택을 계속 누리려면 멤버십을 갱신하세요',
         '혜택 종료:',
         '혜택 종료',
         '혜택이 종료됩니다',
-        '구입한 항목이 없습니다',
         'YouTube Premium을 구독하세요',
         'Premium 멤버십 시작',
         '멤버십이 만료되었습니다',
@@ -2355,7 +2356,6 @@ class EnhancedResumeSubscriptionUseCase {
         'To avoid losing benefits',
         'To keep your benefits',
         'renew your membership',
-        'No purchases',
         'Get YouTube Premium',
         'Subscribe to YouTube Premium',
         'Start your Premium membership',
