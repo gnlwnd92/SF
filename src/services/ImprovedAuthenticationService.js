@@ -3020,53 +3020,50 @@ class ImprovedAuthenticationService {
         }
 
         // ============================================================
-        // 방법 2: 텍스트로 찾기 (기존 계정 제외)
-        // data-identifier가 없는 요소 중에서 버튼 텍스트를 찾음
+        // 방법 2: GYN 방식 - li 우선 탐색 (가장 정확)
+        // li를 먼저 찾고, 그 li의 textContent에 버튼 텍스트가 포함되어 있는지 확인
+        // 내부 span을 찾고 .closest()하는 방식이 아닌, 부모부터 시작
         // ============================================================
-        for (const text of buttonTexts) {
-          // 모든 요소 검색 (정확한 일치 우선)
-          const elements = Array.from(document.querySelectorAll('*')).filter(el => {
-            const elText = el.textContent?.trim();
-            // 정확한 일치 또는 포함 여부 확인
-            if (!elText || elText.length > 100) return false; // 긴 텍스트는 제외
-            if (elText !== text && !elText.includes(text)) return false;
-            if (el.offsetHeight <= 0 || el.offsetWidth <= 0) return false;
+        const selectors = ['li', '[role="link"]', 'button', '[role="button"]'];
 
-            // 기존 계정 요소 제외 (data-identifier가 있는 요소)
-            const parent = el.closest('[data-identifier]') ||
-                          el.closest('[data-identifier-logged-in]') ||
-                          el.closest('[data-identifier-logged-out]');
-            if (parent) return false;
+        for (const selector of selectors) {
+          const elements = document.querySelectorAll(selector);
+          for (const el of elements) {
+            const elText = el.textContent?.trim() || '';
 
-            return true;
-          });
+            // 버튼 텍스트 포함 확인
+            if (buttonTexts.some(btn => elText.includes(btn))) {
+              // 가시성 및 크기 검증
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
 
-          for (const element of elements) {
-            // 클릭 가능한 요소 찾기
-            const clickable = element.closest('li') ||
-                            element.closest('[role="button"]') ||
-                            element.closest('[role="link"]') ||
-                            element.closest('button') ||
-                            element.closest('a') ||
-                            element;
+              if (rect.width > 0 && rect.height > 0 &&
+                  style.display !== 'none' &&
+                  style.visibility !== 'hidden') {
 
-            if (clickable) {
-              // 다시 한번 기존 계정 제외
-              const isAccount = clickable.hasAttribute('data-identifier') ||
-                               clickable.hasAttribute('data-identifier-logged-in') ||
-                               clickable.hasAttribute('data-identifier-logged-out');
-              if (isAccount) continue;
+                // 기존 계정 제외 (data-identifier 속성 있으면 스킵)
+                if (el.hasAttribute('data-identifier')) continue;
+                if (el.hasAttribute('data-identifier-logged-in')) continue;
+                if (el.hasAttribute('data-identifier-logged-out')) continue;
 
-              const rect = clickable.getBoundingClientRect();
-              if (rect.width > 0 && rect.height > 0) {
-                console.log(`✅ "다른 계정 사용" 버튼 발견: ${text}`);
-                return {
-                  found: true,
-                  x: rect.x + rect.width / 2,
-                  y: rect.y + rect.height / 2,
-                  selector: null,
-                  text: text
-                };
+                // 부모 요소에 data-identifier가 있어도 스킵
+                const hasAccountParent = el.closest('[data-identifier]') ||
+                                        el.closest('[data-identifier-logged-in]') ||
+                                        el.closest('[data-identifier-logged-out]');
+                if (hasAccountParent) continue;
+
+                // 최소 크기 검증 (클릭 가능한 합리적인 크기)
+                if (rect.width >= 50 && rect.height >= 30) {
+                  console.log(`✅ "다른 계정 사용" 버튼 발견 (GYN 방식): ${elText.substring(0, 30)}...`);
+                  console.log(`   위치: (${Math.round(rect.x + rect.width / 2)}, ${Math.round(rect.y + rect.height / 2)}), 크기: ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+                  return {
+                    found: true,
+                    x: rect.x + rect.width / 2,
+                    y: rect.y + rect.height / 2,
+                    selector: selector,
+                    text: elText
+                  };
+                }
               }
             }
           }
