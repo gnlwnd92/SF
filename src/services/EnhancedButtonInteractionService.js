@@ -138,6 +138,8 @@ class EnhancedButtonInteractionService {
                 '[role="button"]',
                 'a[role="button"]',
                 'yt-button-renderer',
+                'ytd-button-renderer button',  // YouTube Desktop 버튼 렌더러
+                'yt-button-shape button',       // 최신 YouTube 버튼 구조
                 'tp-yt-paper-button',
                 'paper-button'
               ];
@@ -186,7 +188,10 @@ class EnhancedButtonInteractionService {
             '[role="button"]',
             'a[role="button"]',
             'yt-button-renderer',
-            'tp-yt-paper-button'
+            'ytd-button-renderer button',  // YouTube Desktop 버튼 렌더러
+            'yt-button-shape button',       // 최신 YouTube 버튼 구조
+            'tp-yt-paper-button',
+            'paper-button'
           ];
 
           const buttons = document.querySelectorAll(selectors.join(', '));

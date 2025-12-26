@@ -1122,8 +1122,10 @@ class EnhancedResumeSubscriptionUseCase {
       try {
         const hasManageButton = await this.page.evaluate(() => {
           const bodyText = document.body?.innerText || '';
-          return bodyText.includes('Manage membership') || 
+          return bodyText.includes('Manage membership') ||
                  bodyText.includes('멤버십 관리') ||
+                 bodyText.includes('Продлить или изменить') ||
+                 bodyText.includes('Управление подпиской') ||
                  bodyText.includes('관리');
         });
         
@@ -2216,7 +2218,8 @@ class EnhancedResumeSubscriptionUseCase {
           (pageText.includes('PKR 899.00/월') || pageText.includes('PKR 899.00/mo') ||
            pageText.includes('₩8,690/월') || pageText.includes('$14.99/mo'))) {
         // 멤버십 관리 버튼이 있는지 확인
-        const hasManageButton = pageText.includes('멤버십 관리') || pageText.includes('Manage membership');
+        const hasManageButton = pageText.includes('멤버십 관리') || pageText.includes('Manage membership') ||
+                                pageText.includes('Продлить или изменить') || pageText.includes('Управление подпиской');
         if (hasManageButton && !pageText.includes('재개') && !pageText.includes('Resume')) {
           result.isActive = true;
           result.membershipType = 'family';
@@ -3084,6 +3087,8 @@ class EnhancedResumeSubscriptionUseCase {
           const text = btn.textContent?.trim() || '';
           return text.includes('Manage membership') ||
                  text.includes('멤버십 관리') ||
+                 text.includes('Продлить или изменить') ||
+                 text.includes('Управление подпиской') ||
                  text === '관리';
         });
 
@@ -3117,6 +3122,8 @@ class EnhancedResumeSubscriptionUseCase {
             const text = btn.textContent?.trim() || '';
             return text.includes('Manage membership') ||
                    text.includes('멤버십 관리') ||
+                   text.includes('Продлить или изменить') ||
+                   text.includes('Управление подпиской') ||
                    text === '관리';
           });
 
@@ -3504,7 +3511,7 @@ class EnhancedResumeSubscriptionUseCase {
         // 멤버십 관리 버튼 찾기
         const manageButtonText = await this.page.evaluate(() => {
           const buttons = Array.from(document.querySelectorAll('button, [role="button"], yt-button-renderer'));
-          const manageTexts = ['Manage membership', '멤버십 관리', 'Управление подпиской'];
+          const manageTexts = ['Manage membership', '멤버십 관리', 'Продлить или изменить', 'Управление подпиской'];
           
           for (const text of manageTexts) {
             const button = buttons.find(btn => {
@@ -3895,8 +3902,10 @@ class EnhancedResumeSubscriptionUseCase {
           if (manageButton) {
             const buttonText = await manageButton.evaluate(el => el.textContent || el.innerText);
             if (buttonText && (
-              buttonText.includes('멤버십 관리') || 
+              buttonText.includes('멤버십 관리') ||
               buttonText.includes('Manage membership') ||
+              buttonText.includes('Продлить или изменить') || // 러시아어
+              buttonText.includes('Управление подпиской') || // 러시아어
               buttonText.includes('Üyeliği yönet') || // 터키어
               buttonText.includes('Yönet') || // 터키어 짧은 버전
               buttonText.includes('Quản lý gói thành viên') || // 베트남어
@@ -3921,8 +3930,10 @@ class EnhancedResumeSubscriptionUseCase {
           for (const btn of buttons) {
             const text = (btn.textContent || btn.innerText || '').trim();
             if (text && (
-              text.includes('멤버십 관리') || 
+              text.includes('멤버십 관리') ||
               text.includes('Manage membership') ||
+              text.includes('Продлить или изменить') || // 러시아어
+              text.includes('Управление подпиской') || // 러시아어
               text.includes('Üyeliği yönet') || // 터키어
               text.includes('Yönet') || // 터키어 짧은 버전
               text === 'Yönet' || // 터키어 정확한 매칭
@@ -4390,7 +4401,7 @@ class EnhancedResumeSubscriptionUseCase {
         // 멤버십 관리 버튼 찾기
         const manageButtonText = await this.page.evaluate(() => {
           const buttons = Array.from(document.querySelectorAll('button, [role="button"], yt-button-renderer'));
-          const manageTexts = ['Manage membership', '멤버십 관리'];
+          const manageTexts = ['Manage membership', '멤버십 관리', 'Продлить или изменить', 'Управление подпиской'];
           
           for (const text of manageTexts) {
             const button = buttons.find(btn => {

@@ -2060,8 +2060,9 @@ class EnhancedPauseSubscriptionUseCase {
           const manageButton = await this.page.$(selector);
           if (manageButton) {
             const buttonText = await manageButton.evaluate(el => el.textContent || el.innerText);
-            if (buttonText && (buttonText.includes('멤버십 관리') || buttonText.includes('Manage membership') || 
-                              buttonText.includes('Quản lý gói thành viên') || buttonText.includes('Quản lý'))) {
+            if (buttonText && (buttonText.includes('멤버십 관리') || buttonText.includes('Manage membership') ||
+                              buttonText.includes('Quản lý gói thành viên') || buttonText.includes('Quản lý') ||
+                              buttonText.includes('Продлить или изменить') || buttonText.includes('Управление подпиской'))) {
               this.log(`멤버십 관리 버튼 발견: "${buttonText}"`, 'info');
               await manageButton.click();
               manageButtonClicked = true;
@@ -2080,8 +2081,9 @@ class EnhancedPauseSubscriptionUseCase {
           const buttons = Array.from(document.querySelectorAll('button, tp-yt-paper-button'));
           for (const btn of buttons) {
             const text = btn.textContent || btn.innerText;
-            if (text && (text.includes('멤버십 관리') || text.includes('Manage membership') || 
-                        text.includes('Quản lý gói thành viên') || text.includes('Quản lý'))) {
+            if (text && (text.includes('멤버십 관리') || text.includes('Manage membership') ||
+                        text.includes('Quản lý gói thành viên') || text.includes('Quản lý') ||
+                        text.includes('Продлить или изменить') || text.includes('Управление подпиской'))) {
               btn.click();
               return true;
             }
