@@ -6,6 +6,9 @@
  */
 
 const chalk = require('chalk');
+// 휴먼라이크 인터랙션 모듈
+const HumanLikeMouseHelper = require('../infrastructure/adapters/HumanLikeMouseHelper');
+const CDPClickHelper = require('../infrastructure/adapters/CDPClickHelper');
 
 class ButtonInteractionService {
   constructor(config = {}) {
@@ -14,8 +17,47 @@ class ButtonInteractionService {
       waitTimeout: config.waitTimeout || 2000,
       scrollAttempts: config.scrollAttempts || 3,
       useNaturalInteraction: true, // 자연스러운 상호작용 활성화
+      humanLikeMotion: config.humanLikeMotion || false, // 휴먼라이크 모션 활성화
       ...config
     };
+
+    // 휴먼라이크 헬퍼 (페이지 연결 후 초기화)
+    this.mouseHelper = null;
+    this.cdpHelper = null;
+  }
+
+  /**
+   * 휴먼라이크 헬퍼 초기화 (페이지 연결 후 호출)
+   * @param {Page} page - Puppeteer 페이지 객체
+   */
+  async initializeHumanLikeHelpers(page) {
+    if (!this.config.humanLikeMotion) {
+      return;
+    }
+
+    try {
+      this.mouseHelper = new HumanLikeMouseHelper(page, {
+        debugMode: this.config.debugMode,
+        jitterAmount: 3,
+        moveSpeed: 'normal'
+      });
+
+      this.cdpHelper = new CDPClickHelper(page, {
+        verbose: this.config.debugMode,
+        naturalDelay: true
+      });
+      await this.cdpHelper.initialize();
+
+      if (this.config.debugMode) {
+        console.log(chalk.green('  ✅ ButtonInteractionService 휴먼라이크 헬퍼 초기화 완료'));
+      }
+    } catch (error) {
+      if (this.config.debugMode) {
+        console.log(chalk.yellow(`  ⚠️ 휴먼라이크 헬퍼 초기화 실패: ${error.message}`));
+      }
+      this.mouseHelper = null;
+      this.cdpHelper = null;
+    }
   }
 
   /**
@@ -629,28 +671,148 @@ class ButtonInteractionService {
   }
 
   /**
-   * 클릭 시도
+   * 클릭 시도 (휴먼라이크 또는 폴백)
    */
   async attemptClick(page, searchTexts) {
+    // 휴먼라이크 모션이 활성화된 경우
+    if (this.mouseHelper && this.cdpHelper) {
+      return await this.attemptHumanLikeClick(page, searchTexts);
+    }
+
+    // 폴백: 기존 JS 클릭 방식
+    return await this.attemptJsClick(page, searchTexts);
+  }
+
+  /**
+   * 휴먼라이크 클릭 시도 (베지어 곡선 + CDP 네이티브)
+   */
+  async attemptHumanLikeClick(page, searchTexts) {
+    // 1️⃣ 버튼 좌표 찾기 (클릭하지 않고 좌표만 반환)
+    const buttonInfo = await page.evaluate((texts) => {
+      const selectors = [
+        'button',
+        '[role="button"]',
+        'a[role="button"]',
+        'yt-button-renderer',
+        'ytd-button-renderer button',
+        'yt-button-shape button',
+        'tp-yt-paper-button',
+        'paper-button'
+      ];
+
+      const buttons = document.querySelectorAll(selectors.join(', '));
+
+      for (const button of buttons) {
+        const btnText = button.textContent?.trim();
+
+        if (btnText && texts.some(text =>
+          btnText === text ||
+          btnText.includes(text) ||
+          btnText.toLowerCase().includes(text.toLowerCase())
+        )) {
+          if (button.offsetHeight > 0 && button.offsetWidth > 0) {
+            // 스크롤하여 보이게 함
+            button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // 좌표 계산
+            const rect = button.getBoundingClientRect();
+            return {
+              found: true,
+              text: btnText,
+              element: button.tagName.toLowerCase(),
+              x: rect.x + rect.width / 2,
+              y: rect.y + rect.height / 2,
+              width: rect.width,
+              height: rect.height
+            };
+          }
+        }
+      }
+
+      return { found: false };
+    }, searchTexts);
+
+    if (!buttonInfo.found) {
+      return { clicked: false };
+    }
+
+    // 2️⃣ 스크롤 안정화 대기
+    await new Promise(r => setTimeout(r, 300));
+
+    // 3️⃣ 좌표 랜덤화 (버튼 중심에서 ±20% 범위)
+    const offsetRangeX = buttonInfo.width * 0.2;
+    const offsetRangeY = buttonInfo.height * 0.2;
+    const finalX = buttonInfo.x + (Math.random() - 0.5) * offsetRangeX;
+    const finalY = buttonInfo.y + (Math.random() - 0.5) * offsetRangeY;
+
+    // 4️⃣ 베지어 곡선 마우스 이동
+    try {
+      await this.mouseHelper.moveMouseHumanLike(finalX, finalY);
+
+      if (this.config.debugMode) {
+        console.log(chalk.gray(`  🖱️ 베지어 곡선 이동 완료: "${buttonInfo.text}"`));
+      }
+    } catch (error) {
+      if (this.config.debugMode) {
+        console.log(chalk.yellow(`  ⚠️ 베지어 이동 실패, 직접 이동: ${error.message}`));
+      }
+      await page.mouse.move(finalX, finalY);
+    }
+
+    // 5️⃣ CDP 네이티브 클릭
+    try {
+      await this.cdpHelper.clickAtCoordinates(finalX, finalY);
+
+      if (this.config.debugMode) {
+        console.log(chalk.green(`  ✅ CDP 네이티브 클릭: "${buttonInfo.text}"`));
+      }
+
+      return {
+        clicked: true,
+        text: buttonInfo.text,
+        element: buttonInfo.element,
+        humanLike: true
+      };
+    } catch (error) {
+      if (this.config.debugMode) {
+        console.log(chalk.yellow(`  ⚠️ CDP 클릭 실패, Puppeteer 클릭: ${error.message}`));
+      }
+
+      // CDP 실패 시 Puppeteer 클릭 폴백
+      await page.mouse.click(finalX, finalY);
+
+      return {
+        clicked: true,
+        text: buttonInfo.text,
+        element: buttonInfo.element,
+        humanLike: false
+      };
+    }
+  }
+
+  /**
+   * JS 클릭 시도 (폴백용 - 기존 방식)
+   */
+  async attemptJsClick(page, searchTexts) {
     return await page.evaluate((texts) => {
       const selectors = [
         'button',
         '[role="button"]',
         'a[role="button"]',
         'yt-button-renderer',
-        'ytd-button-renderer button',  // YouTube Desktop 버튼 렌더러
-        'yt-button-shape button',       // 최신 YouTube 버튼 구조
+        'ytd-button-renderer button',
+        'yt-button-shape button',
         'tp-yt-paper-button',
         'paper-button'
       ];
-      
+
       const buttons = document.querySelectorAll(selectors.join(', '));
-      
+
       for (const button of buttons) {
         const btnText = button.textContent?.trim();
-        
-        if (btnText && texts.some(text => 
-          btnText === text || 
+
+        if (btnText && texts.some(text =>
+          btnText === text ||
           btnText.includes(text) ||
           btnText.toLowerCase().includes(text.toLowerCase())
         )) {
@@ -660,12 +822,13 @@ class ButtonInteractionService {
             return {
               clicked: true,
               text: btnText,
-              element: button.tagName.toLowerCase()
+              element: button.tagName.toLowerCase(),
+              humanLike: false
             };
           }
         }
       }
-      
+
       return { clicked: false };
     }, searchTexts);
   }

@@ -5,6 +5,8 @@
 
 const chalk = require('chalk');
 const FrameRecoveryService = require('./FrameRecoveryService');
+const HumanLikeMouseHelper = require('../infrastructure/adapters/HumanLikeMouseHelper');
+const CDPClickHelper = require('../infrastructure/adapters/CDPClickHelper');
 
 class EnhancedButtonInteractionService {
   constructor(config = {}) {
@@ -14,7 +16,8 @@ class EnhancedButtonInteractionService {
       waitTimeout: config.waitTimeout || 3000,
       navigationTimeout: config.navigationTimeout || 30000,
       scrollAttempts: config.scrollAttempts || 3,
-      frameRecoveryEnabled: config.frameRecoveryEnabled !== undefined ? config.frameRecoveryEnabled : true
+      frameRecoveryEnabled: config.frameRecoveryEnabled !== undefined ? config.frameRecoveryEnabled : true,
+      humanLikeMotion: config.humanLikeMotion || false
     };
 
     // Frame Recovery Service 초기화
@@ -24,7 +27,110 @@ class EnhancedButtonInteractionService {
       debugMode: this.config.debugMode
     });
 
+    // 휴먼라이크 헬퍼 (페이지 연결 후 초기화)
+    this.mouseHelper = null;
+    this.cdpHelper = null;
+
     this.log('Enhanced Button Service 초기화 완료 (Frame Recovery 활성화)');
+  }
+
+  /**
+   * 휴먼라이크 헬퍼 초기화
+   * @param {Page} page - Puppeteer 페이지 객체
+   */
+  async initializeHumanLikeHelpers(page) {
+    if (!this.config.humanLikeMotion) {
+      this.log('휴먼라이크 모션 비활성화됨', 'info');
+      return;
+    }
+
+    try {
+      this.mouseHelper = new HumanLikeMouseHelper(page, {
+        debugMode: this.config.debugMode,
+        jitterAmount: 3,
+        moveSpeed: 'normal',
+        mouseMoveSteps: 20
+      });
+
+      this.cdpHelper = new CDPClickHelper(page, {
+        verbose: this.config.debugMode,
+        naturalDelay: true
+      });
+
+      await this.cdpHelper.initialize();
+      this.log('✅ 휴먼라이크 헬퍼 초기화 완료 (베지어 곡선 + CDP 클릭)', 'success');
+    } catch (error) {
+      this.log(`⚠️ 휴먼라이크 헬퍼 초기화 실패: ${error.message}`, 'warning');
+      this.mouseHelper = null;
+      this.cdpHelper = null;
+    }
+  }
+
+  /**
+   * 버튼 좌표 찾기 (클릭하지 않음)
+   * @param {Page} page - Puppeteer 페이지 객체
+   * @param {string[]} searchTexts - 검색할 버튼 텍스트 배열
+   * @returns {Object} { found, x, y, text, element }
+   */
+  async findButtonCoordinates(page, searchTexts) {
+    try {
+      return await this.frameRecovery.safeEvaluate(page, (texts) => {
+        const selectors = [
+          'button',
+          '[role="button"]',
+          'a[role="button"]',
+          'yt-button-renderer',
+          'ytd-button-renderer button',
+          'yt-button-shape button',
+          'tp-yt-paper-button',
+          'paper-button',
+          'ytd-toggle-button-renderer',
+          'ytd-menu-renderer button',
+          'yt-icon-button',
+          '[aria-expanded]',
+          'div[tabindex="0"]',
+          'span[tabindex="0"]',
+          '#expand',
+          '.expand-button',
+          'ytd-expander'
+        ];
+
+        const buttons = document.querySelectorAll(selectors.join(', '));
+
+        for (const button of buttons) {
+          const btnText = button.textContent?.trim();
+
+          if (btnText && texts.some(text =>
+            btnText === text ||
+            btnText.includes(text) ||
+            btnText.toLowerCase().includes(text.toLowerCase())
+          )) {
+            if (button.offsetHeight > 0 && button.offsetWidth > 0) {
+              // 스크롤하여 보이게 함
+              button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+              // 버튼 좌표 계산
+              const rect = button.getBoundingClientRect();
+              const x = rect.left + rect.width / 2;
+              const y = rect.top + rect.height / 2;
+
+              return {
+                found: true,
+                x: x,
+                y: y,
+                text: btnText,
+                element: button.tagName.toLowerCase()
+              };
+            }
+          }
+        }
+
+        return { found: false };
+      }, searchTexts);
+    } catch (error) {
+      this.log(`버튼 좌표 찾기 실패: ${error.message}`, 'error');
+      return { found: false };
+    }
   }
 
   log(message, level = 'info') {
@@ -123,6 +229,78 @@ class EnhancedButtonInteractionService {
    * Frame-safe 클릭 실행
    */
   async performFrameSafeClick(page, searchTexts, options = {}) {
+    const { description = 'button', waitForNavigation = false, attempt = 1 } = options;
+
+    try {
+      // 휴먼라이크 모드가 활성화된 경우
+      if (this.mouseHelper && this.cdpHelper) {
+        return await this.performHumanLikeClick(page, searchTexts, options);
+      }
+
+      // 기존 JS 클릭 (폴백)
+      return await this.performJsClick(page, searchTexts, options);
+
+    } catch (error) {
+      this.log(`Frame-safe 클릭 실패: ${error.message}`, 'error');
+      throw error;
+    }
+  }
+
+  /**
+   * 휴먼라이크 클릭 실행 (베지어 곡선 + CDP 네이티브 클릭)
+   */
+  async performHumanLikeClick(page, searchTexts, options = {}) {
+    const { description = 'button', waitForNavigation = false } = options;
+
+    this.log(`🎯 휴먼라이크 클릭 시도: ${description}`, 'info');
+
+    // 1. 버튼 좌표 찾기 (클릭하지 않음)
+    const buttonInfo = await this.findButtonCoordinates(page, searchTexts);
+
+    if (!buttonInfo.found) {
+      this.log(`버튼 찾지 못함: ${description}`, 'warning');
+      return { clicked: false };
+    }
+
+    // 스크롤 후 안정화 대기
+    await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
+
+    // 좌표 다시 확인 (스크롤로 인해 변경될 수 있음)
+    const updatedInfo = await this.findButtonCoordinates(page, searchTexts);
+    const finalX = updatedInfo.found ? updatedInfo.x : buttonInfo.x;
+    const finalY = updatedInfo.found ? updatedInfo.y : buttonInfo.y;
+
+    // 2. 베지어 곡선으로 마우스 이동
+    this.log(`🖱️ 베지어 곡선 마우스 이동: (${Math.round(finalX)}, ${Math.round(finalY)})`, 'info');
+    await this.mouseHelper.moveMouseHumanLike(finalX, finalY);
+
+    // 3. 클릭 전 짧은 대기 (인간적 반응)
+    await new Promise(r => setTimeout(r, 100 + Math.random() * 150));
+
+    // 4. CDP 네이티브 클릭
+    if (waitForNavigation) {
+      await Promise.all([
+        page.waitForNavigation({ timeout: this.config.navigationTimeout, waitUntil: 'domcontentloaded' }).catch(() => {}),
+        this.cdpHelper.clickAtCoordinates(finalX, finalY)
+      ]);
+    } else {
+      await this.cdpHelper.clickAtCoordinates(finalX, finalY);
+    }
+
+    this.log(`✅ 휴먼라이크 클릭 성공: "${buttonInfo.text}"`, 'success');
+
+    return {
+      clicked: true,
+      text: buttonInfo.text,
+      element: buttonInfo.element,
+      humanLike: true
+    };
+  }
+
+  /**
+   * 기존 JS 클릭 (폴백)
+   */
+  async performJsClick(page, searchTexts, options = {}) {
     const { description = 'button', waitForNavigation = false, attempt = 1 } = options;
 
     try {
