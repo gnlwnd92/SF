@@ -105,6 +105,48 @@ document.querySelectorAll('button')
 document.querySelectorAll('button, [role="button"]')
 ```
 
+### 9. Manage 버튼 토글 방지 (v2.6)
+Manage membership 버튼은 **토글** 방식이므로 패널이 이미 열려있으면 클릭 시 닫힘:
+```javascript
+// checkCurrentStatus()에서 먼저 Resume/Pause 버튼이 보이는지 확인
+const buttonsAlreadyVisible = await this.page.evaluate((langData) => {
+  const buttons = document.querySelectorAll('button, [role="button"]');
+  for (const btn of buttons) {
+    const text = btn.textContent?.trim() || '';
+    const hasPause = langData.buttons.pause?.some(p => text.includes(p));
+    const hasResume = langData.buttons.resume?.some(r => text.includes(r));
+    if (hasPause || hasResume) return { visible: true, buttonText: text };
+  }
+  return { visible: false };
+}, lang);
+
+if (buttonsAlreadyVisible.visible) {
+  // ✅ 이미 버튼이 보이면 Manage 클릭 스킵 (토글 방지)
+} else {
+  // Manage 버튼 클릭
+}
+```
+
+### 10. checkCurrentStatus() 직접 클릭 방식 (v2.6)
+`EnhancedButtonInteractionService.clickManageMembershipButton()`은 반환값 불일치 문제가 있음:
+```javascript
+// ❌ EnhancedButtonInteractionService 사용 시 문제
+// 반환: { success, navigated } vs 체크: result.clicked (undefined)
+const clickResult = await enhancedButtonService.clickManageMembershipButton(...);
+if (clickResult.clicked) { ... }  // 항상 undefined!
+
+// ✅ 직접 클릭 방식 사용 (검증된 로직)
+const buttons = await this.page.$$('ytd-button-renderer button, button, [role="button"]');
+for (const btn of buttons) {
+  const buttonText = await btn.evaluate(el => el.textContent);
+  if (buttonText.includes('Manage membership')) {
+    await btn.click();
+    break;
+  }
+}
+```
+**관련 파일**: `EnhancedPauseSubscriptionUseCase.js:1753-1845`, `EnhancedResumeSubscriptionUseCase.js:2094-2134`
+
 ## Architecture
 
 ```
@@ -316,3 +358,5 @@ CLI에서 `🧹 로그/스크린샷 정리` 메뉴로 정리 가능
 6. **기본값 변경시**: `src/config/workerDefaults.js` 수정 (단일 소스)
 7. **휴먼라이크 옵션**: `humanLikeMotion` 기본값 true (봇 탐지 우회)
 8. **버튼 탐색시**: `button, [role="button"]` 셀렉터 사용 (통일)
+9. **Manage 버튼 클릭시**: Resume/Pause 버튼 선행 체크 (토글 방지)
+10. **checkCurrentStatus 수정시**: 직접 클릭 방식 사용 (EnhancedButtonInteractionService 사용 금지)
