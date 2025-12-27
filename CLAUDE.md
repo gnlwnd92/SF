@@ -146,8 +146,11 @@ await new Promise(resolve => setTimeout(resolve, 5000));
 |------|------|
 | `index.js` | 메인 진입점 |
 | `src/container.js` | Awilix DI 컨테이너 (⚠️ 새 서비스 등록 필수) |
+| `src/config/workerDefaults.js` | 통합워커 기본값 (단일 소스) |
 | `src/presentation/cli/EnterpriseCLI.js` | 대화형 CLI 메뉴 |
 | `src/infrastructure/adapters/AdsPowerAdapter.js` | 브라우저 제어 핵심 |
+| `src/infrastructure/adapters/HumanLikeMouseHelper.js` | 베지어 곡선 마우스 이동 |
+| `src/infrastructure/adapters/CDPClickHelper.js` | CDP 네이티브 클릭 |
 | `src/infrastructure/config/multilanguage.js` | 다국어 UI 텍스트 |
 | `src/services/EnhancedDateParsingService.js` | 다국어 날짜 파싱 |
 
@@ -217,10 +220,42 @@ J열 잠금: "작업중:WORKER-PC1:14:35" (15분 초과 시 자동 해제)
 L열 재시도: 실패 횟수 공유
 ```
 
+**기본값 설정** (`src/config/workerDefaults.js`):
+```javascript
+{
+  resumeMinutesBefore: 30,    // 결제재개: 결제 전 30분
+  pauseMinutesAfter: 10,      // 일시중지: 결제 후 10분
+  checkIntervalSeconds: 60,   // 체크 간격 60초
+  maxRetryCount: 3,           // 최대 재시도 3회
+  continuous: true,           // 지속 실행 모드
+  debugMode: true,            // 디버그 모드
+  humanLikeMotion: true       // 휴먼라이크 인터랙션
+}
+```
+
 **관련 파일:**
 - `WorkerLockService.js` - 분산 잠금 관리
 - `TimeFilterService.js` - 결제 시간 기준 필터링
 - `ScheduledSubscriptionWorkerUseCase.js` - 지속 실행 워커
+- `src/config/workerDefaults.js` - 기본값 단일 소스
+
+## 휴먼라이크 인터랙션 (v2.4)
+
+봇 탐지 우회를 위한 자연스러운 마우스/클릭 동작:
+
+| 모듈 | 파일 위치 | 핵심 기능 |
+|------|-----------|-----------|
+| HumanLikeMouseHelper | `src/infrastructure/adapters/` | 베지어 곡선, 손떨림, 가속/감속 |
+| CDPClickHelper | `src/infrastructure/adapters/` | CDP 네이티브 입력 이벤트 |
+| HumanLikeClickService | `src/services/` | 호버 + 딜레이 클릭 |
+| AdvancedClickHelper | `src/infrastructure/adapters/` | 다중 클릭 전략 |
+
+**활성화 방법**: `humanLikeMotion: true` (기본값)
+
+**적용 서비스**:
+- `ImprovedAuthenticationService` - 로그인 화면 마우스 이동
+- `ButtonInteractionService` - 버튼 클릭
+- `EnhancedButtonInteractionService` - 팝업 확인 버튼
 
 ## Troubleshooting
 
@@ -268,3 +303,5 @@ CLI에서 `🧹 로그/스크린샷 정리` 메뉴로 정리 가능
 3. **프로필 조회시**: `getAllProfiles()` 사용 (페이지네이션 자동)
 4. **다국어 텍스트 추가시**: `multilanguage.js` + UseCase buttonPriority + `verify:dates`
 5. **환경변수 추가시**: `.env.example` 동기화
+6. **기본값 변경시**: `src/config/workerDefaults.js` 수정 (단일 소스)
+7. **휴먼라이크 옵션**: `humanLikeMotion` 기본값 true (봇 탐지 우회)
