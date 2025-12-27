@@ -1751,37 +1751,96 @@ class EnhancedPauseSubscriptionUseCase {
       this.log(`Resume/Pause 버튼 이미 표시됨: "${buttonsAlreadyVisible.buttonText}" - Manage 클릭 스킵`, 'info');
       this.managementPageOpened = true;
     } else {
-      // 버튼이 안 보이면 Manage membership 클릭
-      const clickResult = await enhancedButtonService.clickManageMembershipButton(
-        this.page,
-        this.currentLanguage,
-        { maxRetries: 3 }
-      );
+      // [v2.6] 버튼이 안 보이면 Manage membership 직접 클릭 (검증된 방식)
+      this.log('Manage membership 버튼 직접 클릭 시도', 'info');
 
-      if (clickResult.clicked) {
+      let manageButtonClicked = false;
+
+      // 방법 1: CSS 선택자로 버튼 찾기
+      const manageButtonSelectors = [
+        'ytd-button-renderer button',
+        'yt-button-shape button',
+        'button',
+        '[role="button"]'
+      ];
+
+      for (const selector of manageButtonSelectors) {
+        if (manageButtonClicked) break;
+        try {
+          const buttons = await this.page.$$(selector);
+          for (const btn of buttons) {
+            const buttonText = await btn.evaluate(el => el.textContent || el.innerText);
+            if (buttonText && (buttonText.includes('멤버십 관리') || buttonText.includes('Manage membership') ||
+                              buttonText.includes('Quản lý gói thành viên') || buttonText.includes('Quản lý') ||
+                              buttonText.includes('Продлить или изменить') || buttonText.includes('Управление подпиской'))) {
+              this.log(`Manage 버튼 발견: "${buttonText.trim().substring(0, 30)}"`, 'info');
+              await btn.click();
+              manageButtonClicked = true;
+              this.log('Manage 버튼 클릭 성공', 'success');
+              break;
+            }
+          }
+        } catch (e) {
+          // 계속 시도
+        }
+      }
+
+      // 방법 2: CSS 선택자로 못 찾으면 evaluate로 직접 찾기
+      if (!manageButtonClicked) {
+        const clicked = await this.page.evaluate(() => {
+          const selectors = [
+            'button',
+            'tp-yt-paper-button',
+            '[role="button"]',
+            'ytd-button-renderer',
+            'yt-button-shape button'
+          ];
+          const buttons = Array.from(document.querySelectorAll(selectors.join(', ')));
+          for (const btn of buttons) {
+            const text = btn.textContent || btn.innerText;
+            if (text && (text.includes('멤버십 관리') || text.includes('Manage membership') ||
+                        text.includes('Quản lý gói thành viên') || text.includes('Quản lý') ||
+                        text.includes('Продлить или изменить') || text.includes('Управление подпиской'))) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (clicked) {
+          manageButtonClicked = true;
+          this.log('Manage 버튼 클릭 성공 (evaluate)', 'success');
+        }
+      }
+
+      if (manageButtonClicked) {
         this.managementPageOpened = true; // 멤버십 관리 페이지 열림 표시
         this.log('멤버십 관리 페이지 열림 상태 저장', 'debug');
 
-      // 멤버십 관리 버튼을 클릭한 후 만료 상태 확인 (방어적 업데이트)
-      // afterManageClick를 true로 설정하여 정확한 만료 판단
-      // "Benefits end:" + "Renew" 버튼 패턴도 확인
-      const expiredCheck = await enhancedButtonService.checkSubscriptionExpired(this.page, true);
+        // 클릭 후 안정화 대기
+        await new Promise(r => setTimeout(r, 2000));
 
-      // 디버그 로깅
-      console.log(chalk.gray(`📊 [ExpiredCheck-AfterManage] 만료 상태 확인 결과:`));
-      console.log(chalk.gray(`  - isExpired: ${expiredCheck.isExpired}`));
-      console.log(chalk.gray(`  - hasBenefitsEnd: ${expiredCheck.hasBenefitsEnd}`));
-      console.log(chalk.gray(`  - hasRenewButton: ${expiredCheck.hasRenewButton}`));
-      console.log(chalk.gray(`  - hasPauseButton: ${expiredCheck.hasPauseButton}`));
-      if (expiredCheck.indicator) {
-        console.log(chalk.gray(`  - indicator: ${expiredCheck.indicator}`));
-      }
+        // 멤버십 관리 버튼을 클릭한 후 만료 상태 확인 (방어적 업데이트)
+        const expiredCheck = await enhancedButtonService.checkSubscriptionExpired(this.page, true);
 
-      if (expiredCheck.isExpired) {
-        this.log(`⚠️ 구독이 만료됨: ${expiredCheck.indicator}`, 'warning');
-        console.log(chalk.yellow(`⚠️ [SubscriptionExpired] Manage 버튼 클릭 후 만료 감지: ${expiredCheck.indicator}`));
-        throw new Error('SUBSCRIPTION_EXPIRED');
-      }
+        // 디버그 로깅
+        console.log(chalk.gray(`📊 [ExpiredCheck-AfterManage] 만료 상태 확인 결과:`));
+        console.log(chalk.gray(`  - isExpired: ${expiredCheck.isExpired}`));
+        console.log(chalk.gray(`  - hasBenefitsEnd: ${expiredCheck.hasBenefitsEnd}`));
+        console.log(chalk.gray(`  - hasRenewButton: ${expiredCheck.hasRenewButton}`));
+        console.log(chalk.gray(`  - hasPauseButton: ${expiredCheck.hasPauseButton}`));
+        if (expiredCheck.indicator) {
+          console.log(chalk.gray(`  - indicator: ${expiredCheck.indicator}`));
+        }
+
+        if (expiredCheck.isExpired) {
+          this.log(`⚠️ 구독이 만료됨: ${expiredCheck.indicator}`, 'warning');
+          console.log(chalk.yellow(`⚠️ [SubscriptionExpired] Manage 버튼 클릭 후 만료 감지: ${expiredCheck.indicator}`));
+          throw new Error('SUBSCRIPTION_EXPIRED');
+        }
+      } else {
+        this.log('Manage 버튼을 찾을 수 없음 - 현재 상태로 진행', 'warning');
       }
     }
 

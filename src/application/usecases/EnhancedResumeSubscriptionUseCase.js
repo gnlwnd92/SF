@@ -2096,22 +2096,42 @@ class EnhancedResumeSubscriptionUseCase {
 
     this.log('📋 초기 상태 체크 시작', 'info');
 
-    // 멤버십 관리 버튼 클릭 시도
-    const clickTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Manage 버튼 클릭 타임아웃')), 15000)
-    );
+    // [v2.6 개선] 먼저 Resume/Pause 버튼이 이미 보이는지 확인
+    // 이미 보이면 Manage membership 클릭 시 패널이 닫히므로 클릭 스킵
+    const buttonsAlreadyVisible = await this.page.evaluate((langData) => {
+      const buttons = document.querySelectorAll('button, [role="button"]');
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim() || '';
+        const hasPause = langData.buttons.pause?.some(p => text.includes(p));
+        const hasResume = langData.buttons.resume?.some(r => text.includes(r));
+        if (hasPause || hasResume) {
+          console.log(`[checkCurrentStatus-Resume] 이미 버튼 보임: "${text}"`);
+          return { visible: true, buttonText: text };
+        }
+      }
+      return { visible: false };
+    }, lang);
 
-    const clicked = await Promise.race([
-      this.clickManageButton(),
-      clickTimeout
-    ]);
+    if (buttonsAlreadyVisible.visible) {
+      this.log(`Resume/Pause 버튼 이미 표시됨: "${buttonsAlreadyVisible.buttonText}" - Manage 클릭 스킵`, 'info');
+    } else {
+      // 멤버십 관리 버튼 클릭 시도
+      const clickTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Manage 버튼 클릭 타임아웃')), 15000)
+      );
 
-    if (!clicked) {
-      this.log('❌ Manage membership 버튼 클릭 실패', 'error');
-      throw new Error('Manage membership 버튼 클릭 실패 - 상태 확인 불가능');
+      const clicked = await Promise.race([
+        this.clickManageButton(),
+        clickTimeout
+      ]);
+
+      if (!clicked) {
+        this.log('❌ Manage membership 버튼 클릭 실패', 'error');
+        throw new Error('Manage membership 버튼 클릭 실패 - 상태 확인 불가능');
+      }
+
+      this.log('✅ Manage 버튼 클릭 성공', 'success');
     }
-
-    this.log('✅ Manage 버튼 클릭 성공', 'success');
 
     // 페이지가 완전히 로드될 때까지 대기 (중요!)
     await new Promise(resolve => setTimeout(resolve, 4000));
