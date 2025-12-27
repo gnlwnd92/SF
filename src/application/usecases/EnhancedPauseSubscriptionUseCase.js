@@ -1731,15 +1731,36 @@ class EnhancedPauseSubscriptionUseCase {
       frameRecoveryEnabled: true
     });
 
-    const clickResult = await enhancedButtonService.clickManageMembershipButton(
-      this.page,
-      this.currentLanguage,
-      { maxRetries: 3 }
-    );
+    // [v2.5 개선] 먼저 Resume/Pause 버튼이 이미 보이는지 확인
+    // 이미 보이면 Manage membership 클릭 시 패널이 닫히므로 클릭 스킵
+    const buttonsAlreadyVisible = await this.page.evaluate((langData) => {
+      const buttons = document.querySelectorAll('button, [role="button"]');
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim() || '';
+        const hasPause = langData.buttons.pause?.some(p => text.includes(p));
+        const hasResume = langData.buttons.resume?.some(r => text.includes(r));
+        if (hasPause || hasResume) {
+          console.log(`[checkCurrentStatus] 이미 버튼 보임: "${text}"`);
+          return { visible: true, buttonText: text };
+        }
+      }
+      return { visible: false };
+    }, lang);
 
-    if (clickResult.clicked) {
-      this.managementPageOpened = true; // 멤버십 관리 페이지 열림 표시
-      this.log('멤버십 관리 페이지 열림 상태 저장', 'debug');
+    if (buttonsAlreadyVisible.visible) {
+      this.log(`Resume/Pause 버튼 이미 표시됨: "${buttonsAlreadyVisible.buttonText}" - Manage 클릭 스킵`, 'info');
+      this.managementPageOpened = true;
+    } else {
+      // 버튼이 안 보이면 Manage membership 클릭
+      const clickResult = await enhancedButtonService.clickManageMembershipButton(
+        this.page,
+        this.currentLanguage,
+        { maxRetries: 3 }
+      );
+
+      if (clickResult.clicked) {
+        this.managementPageOpened = true; // 멤버십 관리 페이지 열림 표시
+        this.log('멤버십 관리 페이지 열림 상태 저장', 'debug');
 
       // 멤버십 관리 버튼을 클릭한 후 만료 상태 확인 (방어적 업데이트)
       // afterManageClick를 true로 설정하여 정확한 만료 판단
@@ -1760,6 +1781,7 @@ class EnhancedPauseSubscriptionUseCase {
         this.log(`⚠️ 구독이 만료됨: ${expiredCheck.indicator}`, 'warning');
         console.log(chalk.yellow(`⚠️ [SubscriptionExpired] Manage 버튼 클릭 후 만료 감지: ${expiredCheck.indicator}`));
         throw new Error('SUBSCRIPTION_EXPIRED');
+      }
       }
     }
 
