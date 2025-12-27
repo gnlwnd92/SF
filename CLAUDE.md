@@ -95,6 +95,16 @@ await new Promise(resolve => setTimeout(resolve, 5000));
 - `config` → `logger` → `adapters` → `repositories` → `services` → `usecases`
 - `asFunction(() => container.resolve('...'))`로 지연 해결 가능
 
+### 8. 버튼 셀렉터 통일 (v2.5)
+YouTube가 `<div role="button">`으로 렌더링할 수 있으므로 항상 통일된 셀렉터 사용:
+```javascript
+// ❌ 일부 버튼 누락 가능
+document.querySelectorAll('button')
+
+// ✅ 모든 버튼 형태 감지
+document.querySelectorAll('button, [role="button"]')
+```
+
 ## Architecture
 
 ```
@@ -305,3 +315,4 @@ CLI에서 `🧹 로그/스크린샷 정리` 메뉴로 정리 가능
 5. **환경변수 추가시**: `.env.example` 동기화
 6. **기본값 변경시**: `src/config/workerDefaults.js` 수정 (단일 소스)
 7. **휴먼라이크 옵션**: `humanLikeMotion` 기본값 true (봇 탐지 우회)
+8. **버튼 탐색시**: `button, [role="button"]` 셀렉터 사용 (통일)
