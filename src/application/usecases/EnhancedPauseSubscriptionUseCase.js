@@ -1763,6 +1763,28 @@ class EnhancedPauseSubscriptionUseCase {
       }
     }
 
+    // 버튼 로딩 대기 (Pause 또는 Resume 버튼이 나타날 때까지)
+    try {
+      await this.page.waitForFunction(
+        (langData) => {
+          const buttons = document.querySelectorAll('button, [role="button"]');
+          for (const btn of buttons) {
+            const text = btn.textContent?.trim() || '';
+            // Pause 버튼 또는 Resume 버튼이 있으면 로딩 완료
+            const hasPause = langData.buttons.pause?.some(p => text.includes(p));
+            const hasResume = langData.buttons.resume?.some(r => text.includes(r));
+            if (hasPause || hasResume) return true;
+          }
+          return false;
+        },
+        { timeout: 5000 },
+        lang
+      );
+      this.log('버튼 로딩 완료', 'debug');
+    } catch (waitError) {
+      this.log('버튼 대기 타임아웃 - 현재 상태로 진행', 'warning');
+    }
+
     // 상태 확인
     const status = await this.page.evaluate((langData) => {
       const pageText = document.body?.textContent || '';
@@ -1774,8 +1796,8 @@ class EnhancedPauseSubscriptionUseCase {
         pausedUntilDate: null  // 일시중지 상태에서 재개 날짜
       };
 
-      // Resume 버튼 확인
-      const buttons = document.querySelectorAll('button');
+      // Resume 버튼 확인 (button + role="button" 모두 체크)
+      const buttons = document.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
         const btnText = btn.textContent?.trim();
         if (btnText && langData.buttons.resume.some(resumeText => btnText.includes(resumeText))) {
@@ -3167,8 +3189,8 @@ class EnhancedPauseSubscriptionUseCase {
         resumeDate: null
       };
       
-      // Resume 버튼 확인
-      const buttons = document.querySelectorAll('button');
+      // Resume 버튼 확인 (button + role="button" 모두 체크)
+      const buttons = document.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
         const btnText = btn.textContent?.trim();
         if (btnText && langData.buttons.resume.some(resumeText => btnText.includes(resumeText))) {
@@ -3176,7 +3198,7 @@ class EnhancedPauseSubscriptionUseCase {
           break;
         }
       }
-      
+
       // 날짜 추출 - 각 언어별 패턴
       const pageText = document.body?.textContent || '';
       const datePatterns = [

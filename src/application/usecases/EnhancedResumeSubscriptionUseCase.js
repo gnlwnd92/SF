@@ -3088,7 +3088,7 @@ class EnhancedResumeSubscriptionUseCase {
       console.log(chalk.gray('  1️⃣ 확장된 콘텐츠 확인...'));
 
       const initialCheck = await this.page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button'));
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
         const hasManageButton = buttons.some(btn => {
           const text = btn.textContent?.trim() || '';
           return text.includes('Manage membership') ||
@@ -3123,7 +3123,7 @@ class EnhancedResumeSubscriptionUseCase {
 
         // Manage membership 버튼 클릭
         const clicked = await this.page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll('button'));
+          const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
           const manageBtn = buttons.find(btn => {
             const text = btn.textContent?.trim() || '';
             return text.includes('Manage membership') ||
@@ -3666,7 +3666,7 @@ class EnhancedResumeSubscriptionUseCase {
 
         // Resume 버튼을 다시 한 번 탐색 (다국어 지원)
         const resumeButton = await this.page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll('button'));
+          const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
           return buttons.some(btn => {
             const text = btn.textContent?.trim() || '';
             // 다국어 설정 사용 (러시아어 포함)
