@@ -17,6 +17,9 @@ console.log('[EnterpriseCLI] Loading container...');
 const { setupContainer } = require('../../container');
 console.log('[EnterpriseCLI] container loaded');
 
+// 통합워커 기본값 (단일 소스)
+const WORKER_DEFAULTS = require('../../config/workerDefaults');
+
 // WorkingAuthenticationService와 GoogleLoginHelperMinimal은 로드 문제가 있을 수 있으므로 나중에 로드
 let WorkingAuthenticationService = null;
 let GoogleLoginHelperMinimal = null;
@@ -3160,47 +3163,47 @@ class EnterpriseCLI {
       console.log(chalk.gray('  • 참조 탭: 통합워커'));
       console.log(chalk.gray('─'.repeat(50)));
 
-      // 파라미터 입력
+      // 파라미터 입력 (기본값은 WORKER_DEFAULTS에서 가져옴)
       const { resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds, continuous, debugMode } = await inquirer.prompt([
         {
           type: 'number',
           name: 'resumeMinutesBefore',
           message: '결제재개 기준 (결제 전 M분):',
-          default: 60,
+          default: WORKER_DEFAULTS.resumeMinutesBefore,
           validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
         },
         {
           type: 'number',
           name: 'pauseMinutesAfter',
           message: '일시중지 기준 (결제 후 N분):',
-          default: 30,
+          default: WORKER_DEFAULTS.pauseMinutesAfter,
           validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
         },
         {
           type: 'number',
           name: 'maxRetryCount',
           message: '최대 재시도 횟수:',
-          default: 3,
+          default: WORKER_DEFAULTS.maxRetryCount,
           validate: (value) => value >= 1 && value <= 10 ? true : '1-10 사이의 값을 입력하세요'
         },
         {
           type: 'number',
           name: 'checkIntervalSeconds',
           message: '체크 간격 (초):',
-          default: 60,
+          default: WORKER_DEFAULTS.checkIntervalSeconds,
           validate: (value) => value >= 10 ? true : '10초 이상의 값을 입력하세요'
         },
         {
           type: 'confirm',
           name: 'continuous',
           message: '지속 실행 모드? (Ctrl+C로 종료)',
-          default: true
+          default: WORKER_DEFAULTS.continuous
         },
         {
           type: 'confirm',
           name: 'debugMode',
           message: '디버그 모드 활성화?',
-          default: false
+          default: WORKER_DEFAULTS.debugMode
         }
       ]);
 

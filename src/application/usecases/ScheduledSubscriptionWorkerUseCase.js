@@ -14,6 +14,7 @@
  */
 
 const chalk = require('chalk');
+const WORKER_DEFAULTS = require('../../config/workerDefaults');
 
 class ScheduledSubscriptionWorkerUseCase {
   constructor({
@@ -61,12 +62,12 @@ class ScheduledSubscriptionWorkerUseCase {
    */
   async execute(options = {}) {
     const {
-      resumeMinutesBefore = 10,
-      pauseMinutesAfter = 30,
-      maxRetryCount = 3,
-      checkIntervalSeconds = 60,
-      debugMode = false,
-      continuous = true
+      resumeMinutesBefore = WORKER_DEFAULTS.resumeMinutesBefore,
+      pauseMinutesAfter = WORKER_DEFAULTS.pauseMinutesAfter,
+      maxRetryCount = WORKER_DEFAULTS.maxRetryCount,
+      checkIntervalSeconds = WORKER_DEFAULTS.checkIntervalSeconds,
+      debugMode = WORKER_DEFAULTS.debugMode,
+      continuous = WORKER_DEFAULTS.continuous
     } = options;
 
     const startTime = Date.now();
@@ -414,25 +415,25 @@ class ScheduledSubscriptionWorkerUseCase {
   getPermanentFailureStatus(result) {
     // 구독 만료
     if (result.status === 'subscription_expired' ||
-        result.error?.includes('만료') ||
-        result.error?.includes('expired')) {
+      result.error?.includes('만료') ||
+      result.error?.includes('expired')) {
       return '만료됨';
     }
 
     // 계정 잠김
     if (result.accountLocked ||
-        result.status === 'account_locked' ||
-        result.error?.includes('계정잠김') ||
-        result.error?.includes('locked')) {
+      result.status === 'account_locked' ||
+      result.error?.includes('계정잠김') ||
+      result.error?.includes('locked')) {
       return '계정잠김';
     }
 
     // reCAPTCHA (재시도 불가)
     if (result.recaptchaDetected ||
-        result.skipRetry ||
-        result.status === 'recaptcha_detected' ||
-        result.error?.includes('reCAPTCHA') ||
-        result.error?.includes('recaptcha')) {
+      result.skipRetry ||
+      result.status === 'recaptcha_detected' ||
+      result.error?.includes('reCAPTCHA') ||
+      result.error?.includes('recaptcha')) {
       return 'reCAPTCHA차단';
     }
 
@@ -574,7 +575,7 @@ class ScheduledSubscriptionWorkerUseCase {
    */
   printCycleSummary() {
     const total = this.stats.resume.success + this.stats.resume.failed +
-                  this.stats.pause.success + this.stats.pause.failed;
+      this.stats.pause.success + this.stats.pause.failed;
 
     if (total > 0) {
       this.log(chalk.cyan(`\n   📊 이번 사이클:`));

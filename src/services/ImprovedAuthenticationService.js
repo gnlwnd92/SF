@@ -41,7 +41,7 @@ class ImprovedAuthenticationService {
     });
 
     // 휴먼라이크 인터랙션 헬퍼 (페이지 연결 후 초기화)
-    this.humanLikeMotion = config.humanLikeMotion || false;
+    this.humanLikeMotion = config.humanLikeMotion !== undefined ? config.humanLikeMotion : true;
     this.mouseHelper = null;
     this.cdpHelper = null;
 

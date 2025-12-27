@@ -17,7 +17,7 @@ class EnhancedButtonInteractionService {
       navigationTimeout: config.navigationTimeout || 30000,
       scrollAttempts: config.scrollAttempts || 3,
       frameRecoveryEnabled: config.frameRecoveryEnabled !== undefined ? config.frameRecoveryEnabled : true,
-      humanLikeMotion: config.humanLikeMotion || false
+      humanLikeMotion: config.humanLikeMotion !== undefined ? config.humanLikeMotion : true
     };
 
     // Frame Recovery Service 초기화

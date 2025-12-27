@@ -30,16 +30,8 @@
       "Bash(cmd /c \"taskkill /f /im node.exe\")",
       "Bash(powershell -Command:*)",
       "Bash(dir:*)",
-      "mcp__filesystem__list_directory",
-      "Skill(brainstorming)",
-      "Bash(node check-sheet-i-column.js:*)",
-      "Bash(del \"C:\\\\Users\\\\admin\\\\OneDrive\\\\바탕 화면\\\\바탕화면 정리 폴더\\\\SF\\\\check-sheet-i-column.js\")",
-      "mcp__sequential-thinking__sequentialthinking",
-      "mcp__filesystem__write_file",
-      "Bash(find:*)",
-      "Bash(where:*)",
-      "mcp__filesystem__edit_file",
-      "Bash(node:*)"
+      "Bash(git pull:*)",
+      "Bash(git stash push:*)"
     ]
   }
 }

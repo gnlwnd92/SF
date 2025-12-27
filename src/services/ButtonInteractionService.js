@@ -17,7 +17,7 @@ class ButtonInteractionService {
       waitTimeout: config.waitTimeout || 2000,
       scrollAttempts: config.scrollAttempts || 3,
       useNaturalInteraction: true, // 자연스러운 상호작용 활성화
-      humanLikeMotion: config.humanLikeMotion || false, // 휴먼라이크 모션 활성화
+      humanLikeMotion: config.humanLikeMotion !== undefined ? config.humanLikeMotion : true, // 휴먼라이크 모션 기본 활성화
       ...config
     };
 
