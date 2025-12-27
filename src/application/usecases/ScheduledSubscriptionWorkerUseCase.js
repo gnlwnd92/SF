@@ -549,7 +549,7 @@ class ScheduledSubscriptionWorkerUseCase {
       return `${emoji} ${typeName} (${language}) ${resultLabel} | ${timestamp} | ${workerId}`;
     } else {
       const errorMsg = (result.error || '').substring(0, 40);
-      return `❌ ${typeName} (${language}) 실패 | ${timestamp} | ${errorMsg}`;
+      return `❌ ${typeName} (${language}) 실패 | ${timestamp} | ${workerId} | ${errorMsg}`;
     }
   }
 
