@@ -499,19 +499,19 @@ class EnhancedResumeSubscriptionUseCase {
 
       // 6. IP 확인 (신규 추가)
       updateProgress('최종 작업');
-      console.log(chalk.blue('📌 [Step 6/6] 최종 작업'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 6/6] 최종 작업'));
       result.browserIP = await this.checkBrowserIP();
-      console.log(chalk.gray(`  - 브라우저 IP: ${result.browserIP || 'N/A'}`));
-      
+      if (this.debugMode) console.log(chalk.gray(`  - 브라우저 IP: ${result.browserIP || 'N/A'}`));
+
       // 7. Google Sheets 업데이트 (IP 정보 포함)
       if (this.pauseSheetRepository) {
-        console.log(chalk.gray('  - Google Sheets 업데이트 중...'));
+        if (this.debugMode) console.log(chalk.gray('  - Google Sheets 업데이트 중...'));
         await this.updateGoogleSheets(profileId, result);
-        console.log(chalk.green('  ✅ Google Sheets 업데이트 완료'));
+        if (this.debugMode) console.log(chalk.green('  ✅ Google Sheets 업데이트 완료'));
       }
 
       // 8. 스크린샷 캡처 (확장 영역 열린 상태에서)
-      console.log(chalk.gray('  - 최종 스크린샷 캡처 중...'));
+      if (this.debugMode) console.log(chalk.gray('  - 최종 스크린샷 캡처 중...'));
       // verifyResumeSuccess()에서 이미 Manage 버튼 클릭했지만, 확실하게 다시 확인
       try {
         const isExpanded = await this.page.evaluate(() => {
@@ -528,11 +528,11 @@ class EnhancedResumeSubscriptionUseCase {
         // 무시 - 이미 확장되어 있을 가능성 높음
       }
       await this.captureScreenshot(profileId, result);
-      
+
       // 9. 브라우저 연결 해제
-      console.log(chalk.gray('  - 브라우저 연결 해제 중...'));
+      if (this.debugMode) console.log(chalk.gray('  - 브라우저 연결 해제 중...'));
       await this.disconnectBrowser(this.actualProfileId || profileId);
-      console.log(chalk.green('✅ 최종 작업 완료\n'));
+      if (this.debugMode) console.log(chalk.green('✅ 최종 작업 완료\n'));
       
       // 타임아웃 및 체커 정리
       if (workflowTimeout) clearTimeout(workflowTimeout);
@@ -3633,10 +3633,11 @@ class EnhancedResumeSubscriptionUseCase {
       error: null
     };
 
-    console.log(chalk.cyan('\n🔄 [Resume Workflow] 실행 시작'));
-    
-    // 디버깅을 위한 스크린샷 저장 함수
+    if (this.debugMode) console.log(chalk.cyan('\n🔄 [Resume Workflow] 실행 시작'));
+
+    // 디버깅을 위한 스크린샷 저장 함수 (debugMode일 때만 실행)
     const saveDebugScreenshot = async (step, suffix = '') => {
+      if (!this.debugMode) return;
       try {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `debug-resume-workflow-${step}${suffix ? '-' + suffix : ''}-${timestamp}.png`;
@@ -3652,7 +3653,7 @@ class EnhancedResumeSubscriptionUseCase {
     try {
       // 1. 현재 페이지 상태 재확인
       this.log('현재 페이지 상태 재확인 중...', 'info');
-      console.log(chalk.blue('  [1/4] 페이지 상태 확인'));
+      if (this.debugMode) console.log(chalk.blue('  [1/4] 페이지 상태 확인'));
       
       await saveDebugScreenshot('workflow-start');
       
@@ -4017,7 +4018,7 @@ class EnhancedResumeSubscriptionUseCase {
       await saveDebugScreenshot('workflow-error');
     }
 
-    console.log(chalk.cyan('🔄 [Resume Workflow] 실행 완료\n'));
+    if (this.debugMode) console.log(chalk.cyan('🔄 [Resume Workflow] 실행 완료\n'));
     return result;
   }
 

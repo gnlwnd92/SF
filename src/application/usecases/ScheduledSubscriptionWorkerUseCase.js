@@ -93,18 +93,30 @@ class ScheduledSubscriptionWorkerUseCase {
       cycles: 0
     };
 
-    this.printHeader(workerId, resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds);
+    // [v2.12] 시작 시점에 모니터링 계정 수 조회
+    let totalAccounts = 0;
+    try {
+      const allTasks = await this.sheetsRepository.getIntegratedWorkerTasks();
+      totalAccounts = allTasks.length;
+    } catch (e) {
+      // 무시 - 0으로 표시
+    }
 
-    // [v2.11] Ctrl+C 핸들러 등록 - 진행 중 작업 잠금 해제 시도
+    this.printHeader(workerId, resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds, totalAccounts);
+
+    // [v2.12] Ctrl+C 핸들러 등록 - 간결한 종료 메시지
     const sigintHandler = async () => {
-      console.log(chalk.yellow('\n⚠️ 종료 요청... 안전 종료 중'));
+      const totalSuccess = this.stats.resume.success + this.stats.pause.success;
+      const totalFailed = this.stats.resume.failed + this.stats.pause.failed;
+
+      console.log(chalk.yellow(`\n⏹️ 종료 요청 (✅${totalSuccess} ❌${totalFailed} 💤${this.stats.cycles}사이클)`));
       this.shouldStop = true;
 
       // 진행 중인 작업이 있으면 잠금 해제 시도
       if (this.currentTaskRowIndex) {
         try {
           await this.workerLockService.releaseIntegratedWorkerLock(this.currentTaskRowIndex);
-          console.log(chalk.gray(`   🔓 잠금 해제: 행 ${this.currentTaskRowIndex}`));
+          console.log(chalk.gray(`   🔓 진행 중 작업 잠금 해제`));
         } catch (e) {
           console.log(chalk.gray(`   ⚠️ 잠금 5분 후 자동 만료`));
         }
@@ -638,15 +650,14 @@ class ScheduledSubscriptionWorkerUseCase {
   /**
    * 헤더 출력 - 워커 시작
    */
-  printHeader(workerId, resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds) {
+  printHeader(workerId, resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds, totalAccounts = 0) {
     const now = new Date();
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${this.getTimeStr()}:${String(now.getSeconds()).padStart(2, '0')}`;
 
     console.log(`${'═'.repeat(60)}`);
     console.log(chalk.cyan.bold(`🚀 통합워커 시작 | ${dateStr}`));
-    console.log(`   재개 기준: ${resumeMinutesBefore}분 전 | 일시중지 기준: ${pauseMinutesAfter}분 후 | 재시도: ${maxRetryCount}회`);
+    console.log(`   모니터링: ${totalAccounts}개 | 재개: ${resumeMinutesBefore}분 전 | 일시중지: ${pauseMinutesAfter}분 후`);
     console.log(`${'═'.repeat(60)}`);
-    console.log(chalk.gray(`   [Ctrl+C로 안전 종료]`));
   }
 
   /**

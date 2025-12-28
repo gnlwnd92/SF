@@ -443,7 +443,7 @@ class EnhancedPauseSubscriptionUseCase {
           }
           
           this.log('일시중지 성공', 'success');
-      console.log(chalk.green(`✅ [WorkflowComplete] 일시중지 성공`));
+          if (this.debugMode) console.log(chalk.green(`✅ [WorkflowComplete] 일시중지 성공`));
         } else {
           throw new Error(pauseResult.error || '일시중지 실패');
         }
@@ -453,11 +453,12 @@ class EnhancedPauseSubscriptionUseCase {
       // profileData에서 email 가져오기
       const email = this.profileData?.email || this.profileData?.googleId;
       if (email) {
-        // 날짜 디버깅
-        console.log(chalk.yellow(`🔍 [DateDebug] Google Sheets 업데이트 시작`));
-        console.log(chalk.yellow(`🔍 [DateDebug] nextBillingDate (일시중지일/다음 결제일): ${result.nextBillingDate}`));
-        console.log(chalk.yellow(`🔍 [DateDebug] resumeDate (재개 예정일): ${result.resumeDate}`));
-        console.log(chalk.yellow(`🔍 [DateDebug] 다음 결제일 필드에 저장할 날짜 (일시중지일): ${result.nextBillingDate}`));
+        // 날짜 디버깅 (debugMode일 때만)
+        if (this.debugMode) {
+          console.log(chalk.yellow(`🔍 [DateDebug] Google Sheets 업데이트 시작`));
+          console.log(chalk.yellow(`🔍 [DateDebug] nextBillingDate: ${result.nextBillingDate}`));
+          console.log(chalk.yellow(`🔍 [DateDebug] resumeDate: ${result.resumeDate}`));
+        }
         
         const sheetsService = new UnifiedSheetsUpdateService({ 
           debugMode: true, // 디버그 모드 활성화
@@ -478,10 +479,12 @@ class EnhancedPauseSubscriptionUseCase {
           detailedResult: this.getDetailedResultMessage(result)
         });
         
-        if (updateResult) {
-          console.log(chalk.green(`✅ [DateDebug] Google Sheets 업데이트 성공`));
-        } else {
-          console.log(chalk.red(`❌ [DateDebug] Google Sheets 업데이트 실패`));
+        if (this.debugMode) {
+          if (updateResult) {
+            console.log(chalk.green(`✅ [DateDebug] Google Sheets 업데이트 성공`));
+          } else {
+            console.log(chalk.red(`❌ [DateDebug] Google Sheets 업데이트 실패`));
+          }
         }
       } else {
         this.log('Google Sheets 업데이트 실패: 이메일 정보 없음', 'warning');
