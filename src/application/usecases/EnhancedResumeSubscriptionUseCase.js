@@ -379,8 +379,17 @@ class EnhancedResumeSubscriptionUseCase {
           result.error = '수동 체크 필요';
           result.needsManualCheck = true;
           result.manualCheckReason = '페이지 로딩 중 또는 불완전한 상태로 인해 자동 처리 불가';
-          
-          // 수동 체크가 필요한 계정 스크린샷 캡처
+
+          // 스크린샷 촬영 전 Manage 버튼 클릭하여 확장 영역 열기
+          try {
+            this.log('📸 스크린샷 촬영을 위해 확장 영역 열기...', 'info');
+            await this.clickManageButton();
+            await new Promise(r => setTimeout(r, 2000));
+          } catch (e) {
+            this.log(`확장 영역 열기 실패 (무시): ${e.message}`, 'warning');
+          }
+
+          // 수동 체크가 필요한 계정 스크린샷 캡처 (확장 영역 열린 상태)
           await this.captureScreenshot(profileId, result);
         } else if (!currentStatus.hasResumeButton) {
           // 재개 버튼이 없을 때 추가 상태 확인
@@ -390,8 +399,17 @@ class EnhancedResumeSubscriptionUseCase {
             result.status = 'expired';
             result.success = false;
             result.error = 'YouTube Premium 구독 만료됨';
-            
-            // 만료된 계정 스크린샷 캡처
+
+            // 스크린샷 촬영 전 Manage 버튼 클릭하여 확장 영역 열기
+            try {
+              this.log('📸 스크린샷 촬영을 위해 확장 영역 열기...', 'info');
+              await this.clickManageButton();
+              await new Promise(r => setTimeout(r, 2000));
+            } catch (e) {
+              this.log(`확장 영역 열기 실패 (무시): ${e.message}`, 'warning');
+            }
+
+            // 만료된 계정 스크린샷 캡처 (확장 영역 열린 상태)
             await this.captureExpiredAccountScreenshot();
           } else if (currentStatus.isActive) {
             this.log('계정이 이미 활성 상태입니다', 'info');
@@ -492,8 +510,23 @@ class EnhancedResumeSubscriptionUseCase {
         console.log(chalk.green('  ✅ Google Sheets 업데이트 완료'));
       }
 
-      // 8. 스크린샷 캡처 (브라우저 연결 해제 전에 실행)
+      // 8. 스크린샷 캡처 (확장 영역 열린 상태에서)
       console.log(chalk.gray('  - 최종 스크린샷 캡처 중...'));
+      // verifyResumeSuccess()에서 이미 Manage 버튼 클릭했지만, 확실하게 다시 확인
+      try {
+        const isExpanded = await this.page.evaluate(() => {
+          const bodyText = document.body?.innerText || '';
+          return bodyText.includes('Resume') || bodyText.includes('재개') ||
+                 bodyText.includes('Pause') || bodyText.includes('일시중지');
+        });
+        if (!isExpanded) {
+          this.log('📸 스크린샷 촬영을 위해 확장 영역 다시 열기...', 'info');
+          await this.clickManageButton();
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } catch (e) {
+        // 무시 - 이미 확장되어 있을 가능성 높음
+      }
       await this.captureScreenshot(profileId, result);
       
       // 9. 브라우저 연결 해제

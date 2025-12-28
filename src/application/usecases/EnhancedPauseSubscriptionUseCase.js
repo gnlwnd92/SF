@@ -308,8 +308,17 @@ class EnhancedPauseSubscriptionUseCase {
             console.log(chalk.green(`✅ [ExpiredUpdate] Google Sheets에 만료 상태 기록 완료`));
           }
         }
-        
-        // 스크린샷 캡처
+
+        // 스크린샷 촬영 전 Manage 버튼 클릭하여 확장 영역 열기
+        try {
+          this.log('📸 스크린샷 촬영을 위해 확장 영역 열기...', 'info');
+          await this.clickManageButton();
+          await new Promise(r => setTimeout(r, 2000)); // 확장 영역 로딩 대기
+        } catch (e) {
+          this.log(`확장 영역 열기 실패 (무시): ${e.message}`, 'warning');
+        }
+
+        // 스크린샷 캡처 (확장 영역 열린 상태)
         await this.captureScreenshot(profileId, result);
         
         // 브라우저 연결 해제
@@ -478,7 +487,22 @@ class EnhancedPauseSubscriptionUseCase {
         this.log('Google Sheets 업데이트 실패: 이메일 정보 없음', 'warning');
       }
 
-      // 7. 스크린샷 캡처 (브라우저 연결 해제 전에 실행)
+      // 7. 스크린샷 캡처 (확장 영역 열린 상태에서)
+      // verifyPauseSuccess()에서 이미 Manage 버튼 클릭했지만, 확실하게 다시 확인
+      try {
+        const isExpanded = await this.page.evaluate(() => {
+          const bodyText = document.body?.innerText || '';
+          return bodyText.includes('Resume') || bodyText.includes('재개') ||
+                 bodyText.includes('Pause') || bodyText.includes('일시중지');
+        });
+        if (!isExpanded) {
+          this.log('📸 스크린샷 촬영을 위해 확장 영역 다시 열기...', 'info');
+          await this.clickManageButton();
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } catch (e) {
+        // 무시 - 이미 확장되어 있을 가능성 높음
+      }
       await this.captureScreenshot(profileId, result);
       
       // 8. 브라우저 연결 해제 (대체 ID 고려)

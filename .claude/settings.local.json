@@ -43,7 +43,8 @@
       "Bash(node check-proxy-sheet.js:*)",
       "Bash(ls:*)",
       "Bash(xargs ls:*)",
-      "Bash(du:*)"
+      "Bash(du:*)",
+      "Bash(find:*)"
     ]
   }
 }
