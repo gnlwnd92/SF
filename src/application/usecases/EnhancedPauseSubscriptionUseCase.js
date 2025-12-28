@@ -158,8 +158,11 @@ class EnhancedPauseSubscriptionUseCase {
       // 대체 ID 추적 변수 초기화
       this.actualProfileId = null;
 
-      this.log(`프로필 ${profileId} 일시중지 시작`, 'info');
-      console.log(chalk.cyan(`📄 [PauseWorkflow] 프로필 ${profileId} 일시중지 시작`));
+      // 디버그 모드에서만 상세 헤더 출력
+      if (this.debugMode) {
+        this.log(`프로필 ${profileId} 일시중지 시작`, 'info');
+        console.log(chalk.cyan(`📄 [PauseWorkflow] 프로필 ${profileId} 일시중지 시작`));
+      }
 
       // DetailedErrorLogger 초기화
       if (this.detailedErrorLogger) {
@@ -197,9 +200,9 @@ class EnhancedPauseSubscriptionUseCase {
       // 브라우저 IP 확인 (통합워커 기록용)
       try {
         result.browserIP = await this.ipService.getCurrentIP(this.page);
-        console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
+        if (this.debugMode) console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
       } catch (ipError) {
-        console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
+        if (this.debugMode) console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
       }
 
       // SafeClickWrapper 초기화 (페이지 로드 후)
@@ -211,7 +214,7 @@ class EnhancedPauseSubscriptionUseCase {
       // 휴먼라이크 헬퍼 초기화 (베지어 곡선 + CDP 네이티브 입력)
       if (this.authService && this.authService.humanLikeMotion) {
         await this.authService.initializeHumanLikeHelpers(this.page);
-        this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
+        if (this.debugMode) this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
       }
 
       if (this.detailedErrorLogger) {
@@ -230,8 +233,10 @@ class EnhancedPauseSubscriptionUseCase {
       const langInfo = languages[this.currentLanguage] || languages['pt'] || { name: this.currentLanguage };
       const displayName = langInfo.name || this.currentLanguage;
 
-      this.log(`감지된 언어: ${displayName}`, 'info');
-      console.log(chalk.cyan(`📄 [LanguageDetect] 감지된 언어: ${displayName}`));
+      if (this.debugMode) {
+        this.log(`감지된 언어: ${displayName}`, 'info');
+        console.log(chalk.cyan(`📄 [LanguageDetect] 감지된 언어: ${displayName}`));
+      }
       
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.endStep({ 
@@ -241,35 +246,31 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // 3-1. 초기 구독 상태 체크 (만료 상태 감지 - 방어적 업데이트)
-      // - Inactive Memberships 섹션 확인
-      // - "Benefits end:" + "Renew" 버튼 패턴 확인 (만료 예정/만료 상태)
-      this.log('초기 구독 상태 확인 중...', 'info');
+      if (this.debugMode) this.log('초기 구독 상태 확인 중...', 'info');
       // Frame-safe 버튼 서비스 사용
       const EnhancedButtonInteractionService = require('../../services/EnhancedButtonInteractionService');
       const buttonService = new EnhancedButtonInteractionService({
-        debugMode: true,
+        debugMode: this.debugMode,
         frameRecoveryEnabled: true
       });
       const initialCheck = await buttonService.checkSubscriptionExpired(this.page, false);
 
-      // 디버그 로깅 - 만료 감지 결과 상세 출력
-      console.log(chalk.gray(`📊 [ExpiredCheck] 만료 상태 확인 결과:`));
-      console.log(chalk.gray(`  - hasInactiveSection: ${initialCheck.hasInactiveSection}`));
-      console.log(chalk.gray(`  - isExpired: ${initialCheck.isExpired}`));
-      console.log(chalk.gray(`  - hasBenefitsEnd: ${initialCheck.hasBenefitsEnd}`));
-      console.log(chalk.gray(`  - hasRenewButton: ${initialCheck.hasRenewButton}`));
-      console.log(chalk.gray(`  - hasPauseButton: ${initialCheck.hasPauseButton}`));
-      console.log(chalk.gray(`  - hasResumeButton: ${initialCheck.hasResumeButton}`));
-      if (initialCheck.indicator) {
-        console.log(chalk.gray(`  - indicator: ${initialCheck.indicator}`));
+      // 디버그 모드에서만 상세 출력
+      if (this.debugMode) {
+        console.log(chalk.gray(`📊 [ExpiredCheck] 만료 상태 확인 결과:`));
+        console.log(chalk.gray(`  - isExpired: ${initialCheck.isExpired}`));
+        console.log(chalk.gray(`  - hasPauseButton: ${initialCheck.hasPauseButton}`));
+        if (initialCheck.indicator) {
+          console.log(chalk.gray(`  - indicator: ${initialCheck.indicator}`));
+        }
       }
 
       // 메인 페이지에서 만료 상태 감지 (확장된 조건)
-      // 1. Inactive Memberships 섹션이 있거나
-      // 2. Benefits end + Renew 버튼이 있고 Pause 버튼이 없는 경우
       if (initialCheck.isExpired || initialCheck.hasInactiveSection) {
-        this.log(`⚠️ 구독이 만료됨 (메인 페이지): ${initialCheck.indicator}`, 'warning');
-        console.log(chalk.yellow(`⚠️ [SubscriptionExpired] 메인 페이지에서 만료 감지: ${initialCheck.indicator}`));
+        if (this.debugMode) {
+          this.log(`⚠️ 구독이 만료됨 (메인 페이지): ${initialCheck.indicator}`, 'warning');
+          console.log(chalk.yellow(`⚠️ [SubscriptionExpired] 메인 페이지에서 만료 감지: ${initialCheck.indicator}`));
+        }
         
         // 만료 상태로 바로 처리
         result.status = 'subscription_expired';
@@ -279,7 +280,7 @@ class EnhancedPauseSubscriptionUseCase {
         // Google Sheets 업데이트
         const email = this.profileData?.email || this.profileData?.googleId;
         if (email) {
-          console.log(chalk.yellow(`⚠️ [ExpiredUpdate] 만료 상태를 Google Sheets에 기록 중...`));
+          if (this.debugMode) console.log(chalk.yellow(`⚠️ [ExpiredUpdate] 만료 상태를 Google Sheets에 기록 중...`));
           
           const UnifiedSheetsUpdateService = require('../../services/UnifiedSheetsUpdateService');
           const sheetsService = new UnifiedSheetsUpdateService({ 
@@ -295,7 +296,7 @@ class EnhancedPauseSubscriptionUseCase {
             detailedResult: `❌ 결제 만료됨 - 수동 확인 필요 ┃ ${new Date().toLocaleTimeString('ko-KR')}`
           });
           
-          if (updateResult) {
+          if (updateResult && this.debugMode) {
             console.log(chalk.green(`✅ [ExpiredUpdate] Google Sheets에 만료 상태 기록 완료`));
           }
         }
@@ -315,7 +316,7 @@ class EnhancedPauseSubscriptionUseCase {
       }
       
       // Manage membership 버튼이 있으면 활성 구독으로 간주
-      if (initialCheck.hasManageButton) {
+      if (initialCheck.hasManageButton && this.debugMode) {
         console.log(chalk.green('✅ [SubscriptionActive] Manage membership 버튼 발견 - 활성 구독으로 진행'));
       }
 

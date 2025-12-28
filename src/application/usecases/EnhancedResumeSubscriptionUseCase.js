@@ -122,14 +122,17 @@ class EnhancedResumeSubscriptionUseCase {
       if (step !== currentStep) {
         stuckRefreshCount = 0;
       }
-      console.log(chalk.gray(`  ⏳ [진행] ${step}`));
+      // 디버그 모드에서만 진행 상황 출력
+      if (this.debugMode) {
+        console.log(chalk.gray(`  ⏳ [진행] ${step}`));
+      }
     };
 
     // 타임아웃 체커 설정
     workflowTimeout = setTimeout(() => {
       result.timedOut = true;
       result.error = `워크플로우 타임아웃 (${WORKFLOW_TIMEOUT/1000}초 초과)`;
-      console.log(chalk.red(`\n⏱️ 워크플로우 타임아웃 - ${currentStep} 단계에서 중단`));
+      if (this.debugMode) console.log(chalk.red(`\n⏱️ 워크플로우 타임아웃 - ${currentStep} 단계에서 중단`));
     }, WORKFLOW_TIMEOUT);
 
     // 스마트 정체 복구 체커 (새로고침 → 스킵)
@@ -137,11 +140,11 @@ class EnhancedResumeSubscriptionUseCase {
       const timeSinceProgress = Date.now() - lastProgressTime;
 
       if (timeSinceProgress > MAX_STUCK_TIME && !result.timedOut && !shouldSkipProfile) {
-        console.log(chalk.yellow(`\n⚠️ 정체 감지: ${Math.floor(timeSinceProgress/1000)}초 동안 ${currentStep} 단계에서 진행 없음`));
+        if (this.debugMode) console.log(chalk.yellow(`\n⚠️ 정체 감지: ${Math.floor(timeSinceProgress/1000)}초 동안 ${currentStep} 단계에서 진행 없음`));
 
         // 2분 이상 정체 시 스킵
         if (timeSinceProgress >= SKIP_AFTER_STUCK) {
-          console.log(chalk.red(`\n🚫 [스마트 복구] ${Math.floor(timeSinceProgress/1000)}초 정체 - 이 프로필 스킵`));
+          if (this.debugMode) console.log(chalk.red(`\n🚫 [스마트 복구] ${Math.floor(timeSinceProgress/1000)}초 정체 - 이 프로필 스킵`));
           shouldSkipProfile = true;
           result.skippedDueToStagnation = true;
           result.error = `정체로 인한 스킵 (${currentStep} 단계에서 ${Math.floor(timeSinceProgress/1000)}초 정체)`;
@@ -151,37 +154,40 @@ class EnhancedResumeSubscriptionUseCase {
         // 1분 이상 정체 시 새로고침 시도 (최대 2회)
         if (timeSinceProgress >= REFRESH_AFTER_STUCK && stuckRefreshCount < MAX_REFRESH_ATTEMPTS) {
           stuckRefreshCount++;
-          console.log(chalk.cyan(`\n🔄 [스마트 복구] 정체 감지 - 새로고침 시도 ${stuckRefreshCount}/${MAX_REFRESH_ATTEMPTS}`));
+          if (this.debugMode) console.log(chalk.cyan(`\n🔄 [스마트 복구] 정체 감지 - 새로고침 시도 ${stuckRefreshCount}/${MAX_REFRESH_ATTEMPTS}`));
 
           try {
             if (this.page && !this.page.isClosed()) {
               // 현재 URL 저장
               const currentUrl = this.page.url();
-              console.log(chalk.gray(`  현재 URL: ${currentUrl}`));
+              if (this.debugMode) console.log(chalk.gray(`  현재 URL: ${currentUrl}`));
 
               // 페이지 새로고침
               await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-              console.log(chalk.green(`  ✅ 새로고침 완료`));
+              if (this.debugMode) console.log(chalk.green(`  ✅ 새로고침 완료`));
 
               // 진행 시간 업데이트 (새로고침 후 1분 더 기다림)
               lastProgressTime = Date.now();
             }
           } catch (refreshError) {
-            console.log(chalk.yellow(`  ⚠️ 새로고침 실패: ${refreshError.message}`));
+            if (this.debugMode) console.log(chalk.yellow(`  ⚠️ 새로고침 실패: ${refreshError.message}`));
           }
         }
       }
     }, 10000); // 10초마다 체크
 
     try {
-      this.log(`프로필 ${profileId} 결제 재개 시작`, 'info');
-      console.log(chalk.cyan.bold('\n═══════════════════════════════════════════'));
-      console.log(chalk.cyan.bold(`🎯 Resume Workflow 시작 - 프로필: ${profileId}`));
-      console.log(chalk.cyan.bold('═══════════════════════════════════════════\n'));
+      // 디버그 모드에서만 상세 헤더 출력
+      if (this.debugMode) {
+        this.log(`프로필 ${profileId} 결제 재개 시작`, 'info');
+        console.log(chalk.cyan.bold('\n═══════════════════════════════════════════'));
+        console.log(chalk.cyan.bold(`🎯 Resume Workflow 시작 - 프로필: ${profileId}`));
+        console.log(chalk.cyan.bold('═══════════════════════════════════════════\n'));
+      }
 
       // 1. 브라우저 연결
       updateProgress('브라우저 연결');
-      console.log(chalk.blue('📌 [Step 1/6] 브라우저 연결'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 1/6] 브라우저 연결'));
       
       // 타임아웃 및 스킵 체크
       if (result.timedOut) {
@@ -204,15 +210,15 @@ class EnhancedResumeSubscriptionUseCase {
 
       // 실제 사용된 AdsPower ID 업데이트
       if (this.actualProfileId && this.actualProfileId !== profileId) {
-        console.log(chalk.cyan(`  🆔 실제 사용 ID: ${this.actualProfileId}`));
+        if (this.debugMode) console.log(chalk.cyan(`  🆔 실제 사용 ID: ${this.actualProfileId}`));
         result.profileId = this.actualProfileId;
       }
 
-      console.log(chalk.green('✅ 브라우저 연결 성공\n'));
+      if (this.debugMode) console.log(chalk.green('✅ 브라우저 연결 성공\n'));
 
       // 2. YouTube Premium 페이지 이동
       updateProgress('YouTube Premium 페이지 이동');
-      console.log(chalk.blue('📌 [Step 2/6] YouTube Premium 페이지 이동'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 2/6] YouTube Premium 페이지 이동'));
       
       if (result.timedOut) {
         throw new Error('WORKFLOW_TIMEOUT');
@@ -228,52 +234,50 @@ class EnhancedResumeSubscriptionUseCase {
       // 브라우저 IP 확인 (통합워커 기록용)
       try {
         result.browserIP = await this.ipService.getCurrentIP(this.page);
-        console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
+        if (this.debugMode) console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
       } catch (ipError) {
-        console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
+        if (this.debugMode) console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
       }
 
       // 휴먼라이크 헬퍼 초기화 (베지어 곡선 + CDP 네이티브 입력)
       if (this.authService && this.authService.humanLikeMotion) {
         await this.authService.initializeHumanLikeHelpers(this.page);
-        this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
+        if (this.debugMode) this.log('✅ 휴먼라이크 헬퍼 초기화 완료', 'info');
       }
 
       // 페이지 이동 완료 후 진행 상황 업데이트
       updateProgress('Premium 페이지 이동 완료');
-      console.log(chalk.green('✅ Premium 페이지 이동 완료\n'));
+      if (this.debugMode) console.log(chalk.green('✅ Premium 페이지 이동 완료\n'));
 
       // v2.0: 결제 문제 감지 및 복구 시도
-      console.log(chalk.blue('📌 [Step 2.5/6] 결제 문제 체크'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 2.5/6] 결제 문제 체크'));
       const ButtonInteractionService = require('../../services/ButtonInteractionService');
       const paymentButtonService = new ButtonInteractionService({ debugMode: true });
       const paymentIssueCheck = await paymentButtonService.detectPaymentIssue(this.page);
 
       if (paymentIssueCheck.hasPaymentIssue) {
-        console.log(chalk.yellow('💳 결제 문제 감지됨 - 복구 시도 중...'));
+        if (this.debugMode) console.log(chalk.yellow('💳 결제 문제 감지됨 - 복구 시도 중...'));
 
         // 스크린샷 저장
         const screenshotPath = `screenshots/payment-issue-resume-${Date.now()}.png`;
         await this.page.screenshot({ path: screenshotPath, fullPage: true });
-        console.log(chalk.gray(`📸 결제 문제 스크린샷 저장: ${screenshotPath}`));
+        if (this.debugMode) console.log(chalk.gray(`📸 결제 문제 스크린샷 저장: ${screenshotPath}`));
 
         // 결제 복구 시도
         const recoveryResult = await paymentButtonService.attemptPaymentRecovery(this.page);
 
         if (recoveryResult.success && recoveryResult.recovered) {
-          // 재결제 성공 - 특별한 상태로 반환
-          console.log(chalk.green('🎉 결제 복구 성공! 다시 확인이 필요합니다.'));
+          if (this.debugMode) console.log(chalk.green('🎉 결제 복구 성공! 다시 확인이 필요합니다.'));
           throw new Error('PAYMENT_RECOVERED_NEED_RECHECK');
         } else {
-          // 결제 복구 실패 - 기존처럼 PAYMENT_METHOD_ISSUE 반환
-          console.log(chalk.red(`❌ 결제 복구 실패: ${recoveryResult.error}`));
+          if (this.debugMode) console.log(chalk.red(`❌ 결제 복구 실패: ${recoveryResult.error}`));
           throw new Error('PAYMENT_METHOD_ISSUE');
         }
       }
 
       // 3. 언어 감지
       updateProgress('언어 감지');
-      console.log(chalk.blue('📌 [Step 3/6] 언어 감지'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 3/6] 언어 감지'));
 
       if (result.timedOut) {
         throw new Error('WORKFLOW_TIMEOUT');
@@ -285,8 +289,10 @@ class EnhancedResumeSubscriptionUseCase {
       this.currentLanguage = await this.detectPageLanguage(browser);
       result.language = this.currentLanguage;  // 통합워커용 언어 정보 저장
 
-      this.log(`감지된 언어: ${languages[this.currentLanguage].name}`, 'info');
-      console.log(chalk.green(`✅ 언어 감지 완료: ${languages[this.currentLanguage].name}\n`));
+      if (this.debugMode) {
+        this.log(`감지된 언어: ${languages[this.currentLanguage].name}`, 'info');
+        console.log(chalk.green(`✅ 언어 감지 완료: ${languages[this.currentLanguage].name}\n`));
+      }
 
       // 브라우저에 다국어 데이터 주입 (러시아어 지원)
       await this.page.evaluate((langData) => {
@@ -295,7 +301,7 @@ class EnhancedResumeSubscriptionUseCase {
 
       // 4. 현재 상태 확인
       updateProgress('구독 상태 확인');
-      console.log(chalk.blue('📌 [Step 4/6] 구독 상태 확인'));
+      if (this.debugMode) console.log(chalk.blue('📌 [Step 4/6] 구독 상태 확인'));
 
       if (result.timedOut) {
         throw new Error('WORKFLOW_TIMEOUT');
@@ -336,11 +342,11 @@ class EnhancedResumeSubscriptionUseCase {
         }
       } else if (currentStatus.isExpired) {
         // 구독이 만료된 경우 - 명확한 처리
-        this.log(`❌ 구독이 만료됨: ${currentStatus.expiredIndicator}`, 'error');
-        console.log(chalk.red('\n❌ 구독 만료 상태 감지'));
-        console.log(chalk.yellow(`  한국어: "혜택을 계속 누리려면 멤버십을 갱신하세요"`));
-        console.log(chalk.yellow(`  영어: "To keep your benefits, renew your membership"`));
-        console.log(chalk.yellow(`  만료 지표: "${currentStatus.expiredIndicator}"`));
+        if (this.debugMode) {
+          this.log(`❌ 구독이 만료됨: ${currentStatus.expiredIndicator}`, 'error');
+          console.log(chalk.red('\n❌ 구독 만료 상태 감지'));
+          console.log(chalk.yellow(`  만료 지표: "${currentStatus.expiredIndicator}"`));
+        }
 
         result.status = '만료됨';  // 상태를 만료됨으로 설정
         result.success = false;
@@ -352,7 +358,7 @@ class EnhancedResumeSubscriptionUseCase {
 
         // 만료된 계정의 스크린샷 저장
         await this.captureDebugScreenshot('expired-account');
-        console.log(chalk.red('\n📝 이 계정은 만료 상태로 Google Sheets에 기록됩니다.'));
+        if (this.debugMode) console.log(chalk.red('\n📝 이 계정은 만료 상태로 Google Sheets에 기록됩니다.'));
       } else {
         // checkCurrentStatus에서 얻은 날짜 저장 (재개 전)
         this.savedNextBillingDate = currentStatus.nextBillingDate;
@@ -390,7 +396,7 @@ class EnhancedResumeSubscriptionUseCase {
                                        pageText.includes('가족 요금제');
 
             if (isFamilyMembership) {
-              console.log(chalk.green('✅ [Family Membership] 이미 활성 상태'));
+              if (this.debugMode) console.log(chalk.green('✅ [Family Membership] 이미 활성 상태'));
               result.membershipType = 'family';
             }
 
@@ -407,10 +413,12 @@ class EnhancedResumeSubscriptionUseCase {
         } else if (currentStatus.isPaused && currentStatus.hasResumeButton) {
           // 5. 일시중지 상태이고 재개 버튼이 있는 경우 - 재개 프로세스 실행
           updateProgress('Resume 프로세스 실행');
-          console.log(chalk.blue('📌 [Step 5/6] Resume 프로세스 실행'));
-          console.log(chalk.green('✅ 일시중지 상태 확인 - 재개 가능'));
-          console.log(chalk.cyan(`  일시중지 날짜: ${currentStatus.pauseScheduledDate || '확인 불가'}`))
-          console.log(chalk.cyan(`  재개 예정 날짜: ${currentStatus.resumeScheduledDate || '확인 불가'}`))
+          if (this.debugMode) {
+            console.log(chalk.blue('📌 [Step 5/6] Resume 프로세스 실행'));
+            console.log(chalk.green('✅ 일시중지 상태 확인 - 재개 가능'));
+            console.log(chalk.cyan(`  일시중지 날짜: ${currentStatus.pauseScheduledDate || '확인 불가'}`));
+            console.log(chalk.cyan(`  재개 예정 날짜: ${currentStatus.resumeScheduledDate || '확인 불가'}`));
+          }
 
           if (result.timedOut) {
             throw new Error('WORKFLOW_TIMEOUT');
@@ -426,26 +434,32 @@ class EnhancedResumeSubscriptionUseCase {
 
             // 팝업에서 날짜를 못 찾았지만 이전에 저장한 날짜가 있는 경우
             if (!result.nextBillingDate && this.savedNextBillingDate) {
-              this.log('팝업에서 날짜를 찾지 못함, 이전에 저장한 날짜 사용', 'warning');
-              console.log(chalk.yellow('⚠️ 팝업에서 날짜 미발견 - 저장된 날짜 사용'));
+              if (this.debugMode) {
+                this.log('팝업에서 날짜를 찾지 못함, 이전에 저장한 날짜 사용', 'warning');
+                console.log(chalk.yellow('⚠️ 팝업에서 날짜 미발견 - 저장된 날짜 사용'));
+              }
               result.nextBillingDate = this.savedNextBillingDate;
-              this.log(`저장된 날짜 사용: ${result.nextBillingDate}`, 'info');
+              if (this.debugMode) this.log(`저장된 날짜 사용: ${result.nextBillingDate}`, 'info');
             }
 
-            this.log('결제 재개 성공', 'success');
-            console.log(chalk.green('✅ Resume 프로세스 성공\n'));
+            if (this.debugMode) {
+              this.log('결제 재개 성공', 'success');
+              console.log(chalk.green('✅ Resume 프로세스 성공\n'));
+            }
           } else {
-            console.log(chalk.red('❌ Resume 프로세스 실패\n'));
+            if (this.debugMode) console.log(chalk.red('❌ Resume 프로세스 실패\n'));
             throw new Error(resumeResult.error || '결제 재개 실패');
           }
         } else {
           // 예상치 못한 상태
-          console.log(chalk.yellow('\n⚠️ 예상치 못한 상태'));
-          console.log(chalk.gray('  상태 정보:'));
-          console.log(chalk.gray(`  - isPaused: ${currentStatus.isPaused}`))
-          console.log(chalk.gray(`  - hasResumeButton: ${currentStatus.hasResumeButton}`))
-          console.log(chalk.gray(`  - isActive: ${currentStatus.isActive}`))
-          console.log(chalk.gray(`  - isExpired: ${currentStatus.isExpired}`))
+          if (this.debugMode) {
+            console.log(chalk.yellow('\n⚠️ 예상치 못한 상태'));
+            console.log(chalk.gray('  상태 정보:'));
+            console.log(chalk.gray(`  - isPaused: ${currentStatus.isPaused}`));
+            console.log(chalk.gray(`  - hasResumeButton: ${currentStatus.hasResumeButton}`));
+            console.log(chalk.gray(`  - isActive: ${currentStatus.isActive}`));
+            console.log(chalk.gray(`  - isExpired: ${currentStatus.isExpired}`));
+          }
 
           result.status = '확인필요';
           result.success = false;
