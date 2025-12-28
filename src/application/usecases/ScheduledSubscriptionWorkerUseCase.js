@@ -1,5 +1,5 @@
 /**
- * ScheduledSubscriptionWorkerUseCase v2.0 - 통합워커 상태 기반 결제 주기 관리
+ * ScheduledSubscriptionWorkerUseCase v2.11 - 통합워커 상태 기반 결제 주기 관리
  *
  * 워크플로우:
  * [일시중지 상태] → 결제 시간 임박(now + M분) → 결제재개 → [결제중 상태]
@@ -11,6 +11,10 @@
  * - L열 재시도 횟수 공유 (분산 워커 간)
  * - J열 잠금으로 충돌 방지
  * - 지속 실행 모드 (Ctrl+C로 안전 종료)
+ *
+ * v2.11 변경사항:
+ * - 좀비 잠금 방지: Ctrl+C 시 진행 중 작업 잠금 해제 시도
+ * - 잠금 만료 시간 단축: 15분 → 5분 (WorkerLockService)
  */
 
 const chalk = require('chalk');
@@ -39,6 +43,9 @@ class ScheduledSubscriptionWorkerUseCase {
     // 실행 상태
     this.isRunning = false;
     this.shouldStop = false;
+
+    // [v2.11] 진행 중 작업 추적 (Ctrl+C 시 잠금 해제용)
+    this.currentTaskRowIndex = null;
 
     // 누적 통계
     this.stats = {
@@ -85,10 +92,21 @@ class ScheduledSubscriptionWorkerUseCase {
 
     this.printHeader(workerId, resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds);
 
-    // Ctrl+C 핸들러 등록
-    const sigintHandler = () => {
+    // [v2.11] Ctrl+C 핸들러 등록 - 진행 중 작업 잠금 해제 시도
+    const sigintHandler = async () => {
       this.log(chalk.yellow('\n\n⚠️ 종료 요청 감지... 현재 작업 완료 후 안전 종료합니다.'));
       this.shouldStop = true;
+
+      // 진행 중인 작업이 있으면 잠금 해제 시도
+      if (this.currentTaskRowIndex) {
+        this.log(chalk.cyan(`   🔓 진행 중 작업 잠금 해제 시도: 행 ${this.currentTaskRowIndex}`));
+        try {
+          await this.workerLockService.releaseIntegratedWorkerLock(this.currentTaskRowIndex);
+          this.log(chalk.green(`   ✅ 잠금 해제 완료: 행 ${this.currentTaskRowIndex}`));
+        } catch (e) {
+          this.log(chalk.yellow(`   ⚠️ 잠금 해제 실패 (5분 후 자동 만료): ${e.message}`));
+        }
+      }
     };
     process.on('SIGINT', sigintHandler);
 
@@ -147,23 +165,19 @@ class ScheduledSubscriptionWorkerUseCase {
     const { resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, debugMode } = options;
     const now = new Date();
 
-    this.log(chalk.cyan(`\n${'─'.repeat(50)}`));
-    this.log(chalk.cyan(`📋 사이클 시작: ${this.timeFilterService.formatDateTime(now)}`));
-    this.log(chalk.cyan(`${'─'.repeat(50)}`));
+    const timeStr = this.timeFilterService.formatDateTime(now);
 
     try {
       // 1. 통합워커 탭에서 모든 작업 조회
       const allTasks = await this.sheetsRepository.getIntegratedWorkerTasks();
-      this.log(`   전체 작업: ${allTasks.length}개`);
 
       if (allTasks.length === 0) {
-        this.log(chalk.yellow(`   ⚠️ 통합워커 탭에 작업 없음`));
+        this.log(chalk.gray(`📋 ${timeStr} | 대기 중 (작업 없음)`));
         return;
       }
 
       // 2. 잠금되지 않은 작업만 필터
       const unlockedTasks = this.workerLockService.filterUnlockedTasks(allTasks);
-      this.log(`   잠금 안된 작업: ${unlockedTasks.length}개`);
 
       // 3. 결제재개 대상 필터링 (일시중지 상태 + 결제 임박)
       const resumeTargets = this.timeFilterService.filterResumeTargets(
@@ -171,7 +185,6 @@ class ScheduledSubscriptionWorkerUseCase {
         resumeMinutesBefore,
         maxRetryCount
       );
-      this.log(`   결제재개 대상: ${resumeTargets.length}개 (상태=일시중지, 시간≤현재+${resumeMinutesBefore}분)`);
 
       // 4. 일시중지 대상 필터링 (결제중 상태 + 결제 완료)
       const pauseTargets = this.timeFilterService.filterPauseTargets(
@@ -179,7 +192,19 @@ class ScheduledSubscriptionWorkerUseCase {
         pauseMinutesAfter,
         maxRetryCount
       );
-      this.log(`   일시중지 대상: ${pauseTargets.length}개 (상태=결제중, 시간≤현재-${pauseMinutesAfter}분)`);
+
+      // [v2.12] 사이클 요약 간소화 - 작업 없으면 1줄, 있으면 상세 출력
+      if (resumeTargets.length === 0 && pauseTargets.length === 0) {
+        this.log(chalk.gray(`📋 ${timeStr} | 대기 중 (${allTasks.length}개 모니터링)`));
+      } else {
+        this.log(chalk.cyan(`\n${'─'.repeat(50)}`));
+        this.log(chalk.cyan(`📋 사이클 시작: ${timeStr}`));
+        this.log(chalk.cyan(`${'─'.repeat(50)}`));
+        this.log(`   전체 작업: ${allTasks.length}개`);
+        this.log(`   잠금 안된 작업: ${unlockedTasks.length}개`);
+        this.log(`   결제재개 대상: ${resumeTargets.length}개 (상태=일시중지, 시간≤현재+${resumeMinutesBefore}분)`);
+        this.log(`   일시중지 대상: ${pauseTargets.length}개 (상태=결제중, 시간≤현재-${pauseMinutesAfter}분)`);
+      }
 
       // 5. 결제재개 먼저 처리 (결제 허용이 더 급함)
       if (resumeTargets.length > 0) {
@@ -234,6 +259,9 @@ class ScheduledSubscriptionWorkerUseCase {
       return;
     }
 
+    // [v2.11] 진행 중 작업 추적 시작 (Ctrl+C 시 잠금 해제용)
+    this.currentTaskRowIndex = rowIndex;
+
     let adsPowerId = null;
     let usedProfileId = null;  // 실제 사용된 프로필 ID (대체 ID 포함)
 
@@ -266,7 +294,8 @@ class ScheduledSubscriptionWorkerUseCase {
         await this.sheetsRepository.updateIntegratedWorkerOnSuccess(rowIndex, {
           newStatus,
           resultText,
-          ip: result.browserIP || result.ip || null,  // UseCase별 필드명 대응
+          ip: result.browserIP || result.ip || null,  // UseCase별 필드명 대응 (G열 누적)
+          proxyId: result.proxyId || null,  // 사용된 프록시 ID (M열 누적)
           nextBillingDate: result.nextBillingDate || null  // F열 업데이트
         });
 
@@ -311,8 +340,13 @@ class ScheduledSubscriptionWorkerUseCase {
 
     } catch (error) {
       // 예외: 결과 기록 + 재시도 증가
+      // 예외 발생 시에는 result가 없으므로 IP/proxyId는 null (브라우저 연결 전 예외일 수 있음)
       const resultText = this.formatResultText(type, false, { error: error.message });
-      await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, { resultText });
+      await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, {
+        resultText,
+        ip: null,      // 예외 발생 시 IP 정보 없음
+        proxyId: null  // 예외 발생 시 프록시 정보 없음
+      });
 
       this.stats[type].failed++;
       this.log(chalk.red(`     ❌ 오류: ${error.message}`));
@@ -327,6 +361,9 @@ class ScheduledSubscriptionWorkerUseCase {
           // 무시
         }
       }
+
+      // [v2.11] 진행 중 작업 추적 종료
+      this.currentTaskRowIndex = null;
 
       // 잠금 해제는 updateIntegratedWorkerOnSuccess/OnFailure/PermanentFailure에서 이미 처리됨
     }
@@ -345,19 +382,27 @@ class ScheduledSubscriptionWorkerUseCase {
   async handleFailedResult(task, type, result, rowIndex, maxRetryCount, adsPowerId) {
     const resultText = this.formatResultText(type, false, result);
 
+    // 실패 시에도 사용한 IP/프록시 추출 (G열, M열 누적용)
+    const usedIP = result.browserIP || result.ip || null;
+    const usedProxyId = result.proxyId || null;
+
     // 1. 영구 실패 상태 확인 (재시도 불가)
     const permanentStatus = this.getPermanentFailureStatus(result);
 
     if (permanentStatus) {
-      // 영구 실패: E열 상태 변경, 재시도 증가 없음
+      // 영구 실패: E열 상태 변경, 재시도 증가 없음, IP/프록시 기록
       await this.sheetsRepository.updateIntegratedWorkerPermanentFailure(rowIndex, {
         newStatus: permanentStatus,
-        resultText
+        resultText,
+        ip: usedIP,
+        proxyId: usedProxyId
       });
 
       this.stats[type].failed++;
       this.log(chalk.red(`     🚫 영구 실패: ${permanentStatus}`));
       this.log(chalk.gray(`     ℹ️ 재시도 대상에서 제외됨`));
+      if (usedIP) this.log(chalk.gray(`     📡 사용 IP: ${usedIP}`));
+      if (usedProxyId) this.log(chalk.gray(`     🔗 사용 프록시: ${usedProxyId}`));
       return;
     }
 
@@ -385,24 +430,56 @@ class ScheduledSubscriptionWorkerUseCase {
           await this.sheetsRepository.updateIntegratedWorkerOnSuccess(rowIndex, {
             newStatus,
             resultText: retryResultText,
-            ip: retryResult.browserIP || retryResult.ip || null,  // UseCase별 필드명 대응
+            ip: retryResult.browserIP || retryResult.ip || null,  // UseCase별 필드명 대응 (G열 누적)
+            proxyId: retryResult.proxyId || null,  // 사용된 프록시 ID (M열 누적)
             nextBillingDate: retryResult.nextBillingDate || null
           });
 
           this.stats[type].success++;
           this.log(chalk.green(`     ✅ CAPTCHA 재시도 성공!`));
           return;
+        } else {
+          // CAPTCHA 재시도도 실패 - IP/프록시 기록 (retryResult에서 추출)
+          const retryIP = retryResult.browserIP || retryResult.ip || usedIP;
+          const retryProxyId = retryResult.proxyId || usedProxyId;
+          const retryResultText = this.formatResultText(type, false, retryResult) + ' (CAPTCHA 재시도)';
+
+          await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, {
+            resultText: retryResultText,
+            ip: retryIP,
+            proxyId: retryProxyId
+          });
+
+          this.stats[type].failed++;
+          this.log(chalk.red(`     ❌ CAPTCHA 재시도 실패`));
+          if (retryIP) this.log(chalk.gray(`     📡 사용 IP: ${retryIP}`));
+          if (retryProxyId) this.log(chalk.gray(`     🔗 사용 프록시: ${retryProxyId}`));
+          return;
         }
       } catch (retryError) {
         this.log(chalk.red(`     ❌ CAPTCHA 재시도 실패: ${retryError.message}`));
+        // 재시도 예외 발생 시에도 원래 사용한 IP/프록시 기록
+        await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, {
+          resultText: resultText + ` (CAPTCHA 재시도 예외: ${retryError.message})`,
+          ip: usedIP,
+          proxyId: usedProxyId
+        });
+        this.stats[type].failed++;
+        return;
       }
     }
 
-    // 3. 일반 실패: 재시도 증가
-    const newRetryCount = await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, { resultText });
+    // 3. 일반 실패: 재시도 증가, IP/프록시 기록
+    const newRetryCount = await this.sheetsRepository.updateIntegratedWorkerOnFailure(rowIndex, {
+      resultText,
+      ip: usedIP,
+      proxyId: usedProxyId
+    });
 
     this.stats[type].failed++;
     this.log(chalk.red(`     ❌ 실패: ${result.error || '알 수 없는 오류'} (재시도: ${newRetryCount}/${maxRetryCount})`));
+    if (usedIP) this.log(chalk.gray(`     📡 사용 IP: ${usedIP}`));
+    if (usedProxyId) this.log(chalk.gray(`     🔗 사용 프록시: ${usedProxyId}`));
   }
 
   /**

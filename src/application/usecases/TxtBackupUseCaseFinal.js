@@ -22,9 +22,10 @@ class TxtBackupUseCaseFinal {
             textExportDir: './data/text_export',
             backupCompletedDir: './data/backup_completed',
             sheetName: '백업',
-            batchSize: 500,
+            batchSize: 50,           // [v2.7] 500 → 50 (Google API 502 방지)
             maxRetries: 3,
             retryDelay: 2000,
+            batchDelay: 1000,        // [v2.7] 배치 간 대기 시간
             spreadsheetId: process.env.GOOGLE_SHEETS_ID
         };
 
@@ -257,15 +258,15 @@ class TxtBackupUseCaseFinal {
             await this.clearSheet();
             await this.setHeaders();
             
-            // 배치로 나누어 업로드
+            // [v2.7] 배치로 나누어 업로드 (재시도 + 대기 로직 추가)
             const totalBatches = Math.ceil(uniqueProfiles.length / this.config.batchSize);
-            
+
             for (let i = 0; i < totalBatches; i++) {
                 const start = i * this.config.batchSize;
                 const end = Math.min(start + this.config.batchSize, uniqueProfiles.length);
                 const batch = uniqueProfiles.slice(start, end);
-                
-                const rows = batch.map(profile => 
+
+                const rows = batch.map(profile =>
                     this.templateHeaders.map(header => {
                         const value = profile[header];
                         // 숫자 타입 유지
@@ -275,18 +276,36 @@ class TxtBackupUseCaseFinal {
                         return value || '';
                     })
                 );
-                
-                await this.sheets.spreadsheets.values.append({
-                    spreadsheetId: this.config.spreadsheetId,
-                    range: `${this.config.sheetName}!A:X`,
-                    valueInputOption: 'RAW',
-                    insertDataOption: 'INSERT_ROWS',
-                    requestBody: {
-                        values: rows
+
+                // [v2.7] 재시도 로직
+                let success = false;
+                for (let attempt = 1; attempt <= this.config.maxRetries && !success; attempt++) {
+                    try {
+                        await this.sheets.spreadsheets.values.append({
+                            spreadsheetId: this.config.spreadsheetId,
+                            range: `${this.config.sheetName}!A:X`,
+                            valueInputOption: 'RAW',
+                            insertDataOption: 'INSERT_ROWS',
+                            requestBody: {
+                                values: rows
+                            }
+                        });
+                        success = true;
+                        console.log(chalk.gray(`   → 배치 ${i + 1}/${totalBatches} 재업로드 완료 (${batch.length}개)`));
+                    } catch (error) {
+                        if (attempt < this.config.maxRetries) {
+                            console.log(chalk.yellow(`   ⚠️ 배치 ${i + 1} 실패 (시도 ${attempt}/${this.config.maxRetries}): ${error.message?.substring(0, 50) || error}`));
+                            await this.delay(this.config.retryDelay * attempt);
+                        } else {
+                            throw new Error(`배치 ${i + 1} 재업로드 실패: ${error.message?.substring(0, 100) || error}`);
+                        }
                     }
-                });
-                
-                console.log(chalk.gray(`   → 배치 ${i + 1}/${totalBatches} 재업로드 완료 (${batch.length}개)`));
+                }
+
+                // [v2.7] 다음 배치 전 대기 (API 제한 방지)
+                if (i < totalBatches - 1) {
+                    await this.delay(this.config.batchDelay);
+                }
             }
 
             this.stats.successfulBackups = uniqueProfiles.length;
@@ -334,12 +353,18 @@ class TxtBackupUseCaseFinal {
     }
 
     /**
-     * 프로필을 시트에 추가 (중복 체크 없이)
+     * 프로필을 시트에 추가 (배치 업로드 + 재시도)
+     * [v2.7] Google Sheets API 오류 방지를 위한 배치 처리
      */
     async appendProfilesToSheet(profiles) {
         if (profiles.length === 0) return;
 
-        const rows = profiles.map(profile => 
+        const BATCH_SIZE = 50; // 50개씩 나누어 업로드
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY = 2000; // 2초
+        const BATCH_DELAY = 1000; // 배치 간 1초 대기
+
+        const rows = profiles.map(profile =>
             this.templateHeaders.map(header => {
                 const value = profile[header];
                 if ((header === 'acc_id' || header === 'proxyid') && typeof value === 'number') {
@@ -349,15 +374,53 @@ class TxtBackupUseCaseFinal {
             })
         );
 
-        await this.sheets.spreadsheets.values.append({
-            spreadsheetId: this.config.spreadsheetId,
-            range: `${this.config.sheetName}!A:X`,
-            valueInputOption: 'RAW',
-            insertDataOption: 'INSERT_ROWS',
-            requestBody: {
-                values: rows
+        const totalBatches = Math.ceil(rows.length / BATCH_SIZE);
+
+        for (let i = 0; i < totalBatches; i++) {
+            const start = i * BATCH_SIZE;
+            const end = Math.min(start + BATCH_SIZE, rows.length);
+            const batch = rows.slice(start, end);
+
+            // 재시도 로직
+            let success = false;
+            for (let attempt = 1; attempt <= MAX_RETRIES && !success; attempt++) {
+                try {
+                    await this.sheets.spreadsheets.values.append({
+                        spreadsheetId: this.config.spreadsheetId,
+                        range: `${this.config.sheetName}!A:X`,
+                        valueInputOption: 'RAW',
+                        insertDataOption: 'INSERT_ROWS',
+                        requestBody: {
+                            values: batch
+                        }
+                    });
+                    success = true;
+
+                    if (totalBatches > 1) {
+                        console.log(chalk.gray(`      → 배치 ${i + 1}/${totalBatches} 업로드 완료 (${batch.length}개)`));
+                    }
+                } catch (error) {
+                    if (attempt < MAX_RETRIES) {
+                        console.log(chalk.yellow(`      ⚠️ 배치 ${i + 1} 실패 (시도 ${attempt}/${MAX_RETRIES}): ${error.message}`));
+                        await this.delay(RETRY_DELAY * attempt); // 지수 백오프
+                    } else {
+                        throw new Error(`배치 ${i + 1} 업로드 실패 (최대 재시도 초과): ${error.message}`);
+                    }
+                }
             }
-        });
+
+            // 다음 배치 전 대기 (API 제한 방지)
+            if (i < totalBatches - 1) {
+                await this.delay(BATCH_DELAY);
+            }
+        }
+    }
+
+    /**
+     * 지연 함수
+     */
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**

@@ -1,53 +1,74 @@
 /**
  * 의존성 주입 컨테이너
  * 모든 컴포넌트의 생성과 연결을 관리
+ *
+ * v2.8: 성능 최적화 - 조건부 로깅 + UseCase 지연 로딩
  */
 
-console.log('[Container] Starting container initialization...');
+// [v2.8] 조건부 로깅 헬퍼
+const DEBUG_STARTUP = process.env.DEBUG_STARTUP === 'true';
+const debugLog = (msg) => { if (DEBUG_STARTUP) console.log(msg); };
+
+debugLog('[Container] Starting container initialization...');
 
 const { createContainer, asClass, asValue, asFunction } = require('awilix');
 const path = require('path');
 
-console.log('[Container] Core modules loaded');
+/**
+ * [v2.8] 지연 로딩 헬퍼 - 실제 사용 시점에 require()
+ * @param {string} modulePath - 모듈 경로
+ * @returns {Function} 모듈을 반환하는 함수
+ */
+function lazyRequire(modulePath) {
+  let cached = null;
+  return () => {
+    if (!cached) {
+      cached = require(modulePath);
+    }
+    return cached;
+  };
+}
+
+debugLog('[Container] Core modules loaded');
 
 // 도메인 엔티티
-console.log('[Container] Loading domain entities...');
+debugLog('[Container] Loading domain entities...');
 const Profile = require('./domain/entities/Profile');
 const Subscription = require('./domain/entities/Subscription');
 const WorkflowResult = require('./domain/entities/WorkflowResult');
 
 // 도메인 서비스  
-console.log('[Container] Loading domain services...');
+debugLog('[Container] Loading domain services...');
 const YouTubePremiumService = require('./domain/services/YouTubePremiumService');
 
 // 인프라 어댑터
-console.log('[Container] Loading AdsPowerAdapter...');
+debugLog('[Container] Loading AdsPowerAdapter...');
 // v4.0 - AdsPowerAdapter에서 스텔스 코드만 비활성화하여 사용
 const AdsPowerAdapter = require('./infrastructure/adapters/AdsPowerAdapter');
 
-console.log('[Container] Loading YouTubeAutomationAdapter...');
+debugLog('[Container] Loading YouTubeAutomationAdapter...');
 // AdsPowerAdapterMinimal은 StealthHelper 의존성 문제로 사용 보류
 const YouTubeAutomationAdapter = require('./infrastructure/adapters/YouTubeAutomationAdapter');
 
-console.log('[Container] Loading BrowserController...');
+debugLog('[Container] Loading BrowserController...');
 const BrowserController = require('./infrastructure/adapters/BrowserController');
 
 // 레포지토리
-console.log('[Container] Loading repositories...');
+debugLog('[Container] Loading repositories...');
 let GoogleSheetsProfileRepository;
 let EnhancedGoogleSheetsRepository;
 
 // Mock 모드 체크
 if (process.env.USE_MOCK_REPOSITORY === 'true') {
-  console.log('[Container] Using Mock repositories');
+  debugLog('[Container] Using Mock repositories');
   // SimpleGoogleSheetsRepository 사용 (Fixed 로직 적용됨)
     try {
       const SimpleGoogleSheetsRepository = require('./infrastructure/repositories/SimpleGoogleSheetsRepository');
       GoogleSheetsProfileRepository = SimpleGoogleSheetsRepository;
       EnhancedGoogleSheetsRepository = SimpleGoogleSheetsRepository;
-      console.log('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
+      debugLog('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
     } catch (e) {
-      console.log('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
+      debugLog('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
       const MockRepository = require('./infrastructure/repositories/MockGoogleSheetsRepository');
       GoogleSheetsProfileRepository = MockRepository;
       EnhancedGoogleSheetsRepository = MockRepository;
@@ -64,44 +85,44 @@ if (process.env.USE_MOCK_REPOSITORY === 'true') {
   for (const p of serviceAccountPaths) {
     if (fs.existsSync(p)) {
       hasServiceAccount = true;
-      console.log('[Container] Service Account found');
+      debugLog('[Container] Service Account found');
       break;
     }
   }
   
   if (!hasServiceAccount) {
-    console.log('[Container] No Service Account, using Mock');
+    debugLog('[Container] No Service Account, using Mock');
     // SimpleGoogleSheetsRepository 사용 (Fixed 로직 적용됨)
     try {
       const SimpleGoogleSheetsRepository = require('./infrastructure/repositories/SimpleGoogleSheetsRepository');
       GoogleSheetsProfileRepository = SimpleGoogleSheetsRepository;
       EnhancedGoogleSheetsRepository = SimpleGoogleSheetsRepository;
-      console.log('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
+      debugLog('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
     } catch (e) {
-      console.log('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
+      debugLog('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
       const MockRepository = require('./infrastructure/repositories/MockGoogleSheetsRepository');
       GoogleSheetsProfileRepository = MockRepository;
       EnhancedGoogleSheetsRepository = MockRepository;
     }
   } else {
     // GoogleSheetsProfileRepository 파일이 없으므로 EnhancedGoogleSheetsRepository 사용
-    console.log('[Container] GoogleSheetsProfileRepository not found, using EnhancedGoogleSheetsRepository');
+    debugLog('[Container] GoogleSheetsProfileRepository not found, using EnhancedGoogleSheetsRepository');
     try {
       // EnhancedGoogleSheetsRepository를 기본으로 사용
       const EnhancedRepo = require('./infrastructure/repositories/EnhancedGoogleSheetsRepository');
       GoogleSheetsProfileRepository = EnhancedRepo;
       EnhancedGoogleSheetsRepository = EnhancedRepo;
-      console.log('[Container] EnhancedGoogleSheetsRepository loaded successfully');
+      debugLog('[Container] EnhancedGoogleSheetsRepository loaded successfully');
     } catch (e) {
-      console.log('[Container] EnhancedGoogleSheetsRepository load failed, trying SimpleGoogleSheetsRepository');
+      debugLog('[Container] EnhancedGoogleSheetsRepository load failed, trying SimpleGoogleSheetsRepository');
       // Fallback to SimpleGoogleSheetsRepository
       try {
         const SimpleGoogleSheetsRepository = require('./infrastructure/repositories/SimpleGoogleSheetsRepository');
         GoogleSheetsProfileRepository = SimpleGoogleSheetsRepository;
         EnhancedGoogleSheetsRepository = SimpleGoogleSheetsRepository;
-        console.log('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
+        debugLog('[Container] SimpleGoogleSheetsRepository loaded (with Fixed mapping)');
       } catch (e2) {
-        console.log('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
+        debugLog('[Container] SimpleGoogleSheetsRepository load failed, using Mock');
         const MockRepository = require('./infrastructure/repositories/MockGoogleSheetsRepository');
         GoogleSheetsProfileRepository = MockRepository;
         EnhancedGoogleSheetsRepository = MockRepository;
@@ -109,25 +130,25 @@ if (process.env.USE_MOCK_REPOSITORY === 'true') {
     }
   }
 }
-console.log('[Container] Repositories loaded');
+debugLog('[Container] Repositories loaded');
 
 // Google Sheets 설정 서비스
-console.log('[Container] Loading GoogleSheetsConfigService...');
+debugLog('[Container] Loading GoogleSheetsConfigService...');
 let GoogleSheetsConfigService;
 try {
   GoogleSheetsConfigService = require('./services/GoogleSheetsConfigService');
-  console.log('[Container] GoogleSheetsConfigService loaded successfully');
+  debugLog('[Container] GoogleSheetsConfigService loaded successfully');
 } catch (error) {
   console.warn('[Container] GoogleSheetsConfigService not found, using default settings');
 }
 
 // 로깅 시스템
-console.log('[Container] Loading logging system...');
+debugLog('[Container] Loading logging system...');
 
 let LoggerAdapter, SessionLogger, GracefulShutdown, DetailedErrorLogger, ErrorHandlingService;
 
 // LoggerAdapter 간단한 Mock 사용 (파일 로딩 문제 우회)
-console.log('[Container] Using Mock LoggerAdapter');
+debugLog('[Container] Using Mock LoggerAdapter');
 LoggerAdapter = class MockLoggerAdapter {
   constructor() {}
   async logWorkflowStart() {}
@@ -139,37 +160,37 @@ LoggerAdapter = class MockLoggerAdapter {
 };
 
 try {
-  console.log('[Container] Loading SessionLogger...');
+  debugLog('[Container] Loading SessionLogger...');
   SessionLogger = require('./services/SessionLogger');
 } catch (error) {
   console.warn('[Container] SessionLogger not found, skipping');
 }
 
 try {
-  console.log('[Container] Loading GracefulShutdown...');
+  debugLog('[Container] Loading GracefulShutdown...');
   GracefulShutdown = require('./services/GracefulShutdown');
 } catch (error) {
   console.warn('[Container] GracefulShutdown not found, skipping');
 }
 
 try {
-  console.log('[Container] Loading DetailedErrorLogger...');
+  debugLog('[Container] Loading DetailedErrorLogger...');
   DetailedErrorLogger = require('./services/DetailedErrorLogger');
 } catch (error) {
   console.warn('[Container] DetailedErrorLogger not found, skipping');
 }
 
 try {
-  console.log('[Container] Loading ErrorHandlingService...');
+  debugLog('[Container] Loading ErrorHandlingService...');
   ErrorHandlingService = require('./services/ErrorHandlingService');
 } catch (error) {
   console.warn('[Container] ErrorHandlingService not found, skipping');
 }
 
-console.log('[Container] Logging system loaded');
+debugLog('[Container] Logging system loaded');
 
 // 애플리케이션 유스케이스
-console.log('[Container] Loading use cases...');
+debugLog('[Container] Loading use cases...');
 
 let EnhancedPauseSubscriptionUseCase, EnhancedResumeSubscriptionUseCase;
 let BatchPauseOptimizedUseCase, BatchResumeOptimizedUseCase;
@@ -177,7 +198,7 @@ let DeleteProfileUseCase, OptimizedDeleteProfileUseCase;
 let RenewalCheckPauseUseCase;
 
 try {
-  console.log('[Container] Loading EnhancedPauseSubscriptionUseCase...');
+  debugLog('[Container] Loading EnhancedPauseSubscriptionUseCase...');
   EnhancedPauseSubscriptionUseCase = require('./application/usecases/EnhancedPauseSubscriptionUseCase');
 } catch (error) {
   console.error('[Container] Failed to load EnhancedPauseSubscriptionUseCase:', error.message);
@@ -185,23 +206,23 @@ try {
 }
 
 try {
-  console.log('[Container] Loading RenewalCheckPauseUseCase...');
+  debugLog('[Container] Loading RenewalCheckPauseUseCase...');
   RenewalCheckPauseUseCase = require('./application/usecases/RenewalCheckPauseUseCase');
-  console.log('[Container] RenewalCheckPauseUseCase loaded successfully');
+  debugLog('[Container] RenewalCheckPauseUseCase loaded successfully');
 } catch (error) {
   console.warn('[Container] RenewalCheckPauseUseCase not found:', error.message);
 }
 
 try {
-  console.log('[Container] Loading EnhancedResumeSubscriptionUseCase...');
+  debugLog('[Container] Loading EnhancedResumeSubscriptionUseCase...');
   EnhancedResumeSubscriptionUseCase = require('./application/usecases/EnhancedResumeSubscriptionUseCase');
-  console.log('[Container] EnhancedResumeSubscriptionUseCase loaded successfully');
+  debugLog('[Container] EnhancedResumeSubscriptionUseCase loaded successfully');
 } catch (error) {
   console.error('[Container] Failed to load EnhancedResumeSubscriptionUseCase:', error.message);
   console.error('[Container] Stack trace:', error.stack);
   // 파일은 있으므로 임시로 ImprovedResumeSubscriptionUseCase 사용
   try {
-    console.log('[Container] Fallback to ImprovedResumeSubscriptionUseCase...');
+    debugLog('[Container] Fallback to ImprovedResumeSubscriptionUseCase...');
     EnhancedResumeSubscriptionUseCase = require('./application/usecases/ImprovedResumeSubscriptionUseCase');
   } catch (fallbackError) {
     console.error('[Container] Fallback also failed:', fallbackError.message);
@@ -234,133 +255,133 @@ try {
 }
 
 // 개선된 유스케이스 (GOOGLE_LOGIN_SOLUTION_REPORT 기반)
-console.log('[Container] Loading ImprovedPauseSubscriptionUseCase...');
+debugLog('[Container] Loading ImprovedPauseSubscriptionUseCase...');
 const ImprovedPauseSubscriptionUseCase = require('./application/usecases/ImprovedPauseSubscriptionUseCase');
-console.log('[Container] ImprovedPauseSubscriptionUseCase loaded');
-console.log('[Container] Loading ImprovedResumeSubscriptionUseCase...');
+debugLog('[Container] ImprovedPauseSubscriptionUseCase loaded');
+debugLog('[Container] Loading ImprovedResumeSubscriptionUseCase...');
 const ImprovedResumeSubscriptionUseCase = require('./application/usecases/ImprovedResumeSubscriptionUseCase');
-console.log('[Container] ImprovedResumeSubscriptionUseCase loaded');
+debugLog('[Container] ImprovedResumeSubscriptionUseCase loaded');
 
 // 백업/복원 유스케이스
-console.log('[Container] Loading backup/restore use cases...');
+debugLog('[Container] Loading backup/restore use cases...');
 const TxtBackupUseCase = require('./application/usecases/TxtBackupUseCase');
-console.log('[Container] TxtBackupUseCase loaded');
+debugLog('[Container] TxtBackupUseCase loaded');
 const TxtBackupUseCaseEnhanced = require('./application/usecases/TxtBackupUseCaseEnhanced');
-console.log('[Container] TxtBackupUseCaseEnhanced loaded');
+debugLog('[Container] TxtBackupUseCaseEnhanced loaded');
 const TxtBackupUseCaseAdvanced = require('./application/usecases/TxtBackupUseCaseAdvanced');
-console.log('[Container] TxtBackupUseCaseAdvanced loaded');
+debugLog('[Container] TxtBackupUseCaseAdvanced loaded');
 const TxtRestoreUseCase = require('./application/usecases/TxtRestoreUseCase');
-console.log('[Container] TxtRestoreUseCase loaded');
+debugLog('[Container] TxtRestoreUseCase loaded');
 const TxtBackupUseCaseFinal = require('./application/usecases/TxtBackupUseCaseFinal');
-console.log('[Container] TxtBackupUseCaseFinal loaded');
+debugLog('[Container] TxtBackupUseCaseFinal loaded');
 
 // 가족요금제 체크 유스케이스
-console.log('[Container] Loading family plan use cases...');
+debugLog('[Container] Loading family plan use cases...');
 let FamilyPlanCheckUseCase, FamilyPlanCheckUseCaseV2, EnhancedFamilyPlanCheckUseCase;
 
 try {
   FamilyPlanCheckUseCase = require('./application/usecases/FamilyPlanCheckUseCase');
-  console.log('[Container] FamilyPlanCheckUseCase loaded');
+  debugLog('[Container] FamilyPlanCheckUseCase loaded');
 } catch (error) {
   console.warn('[Container] FamilyPlanCheckUseCase load failed:', error.message);
 }
 
 try {
   FamilyPlanCheckUseCaseV2 = require('./application/usecases/FamilyPlanCheckUseCaseV2');
-  console.log('[Container] FamilyPlanCheckUseCaseV2 loaded');
+  debugLog('[Container] FamilyPlanCheckUseCaseV2 loaded');
 } catch (error) {
   console.warn('[Container] FamilyPlanCheckUseCaseV2 load failed:', error.message);
 }
 
 try {
   EnhancedFamilyPlanCheckUseCase = require('./application/usecases/EnhancedFamilyPlanCheckUseCase');
-  console.log('[Container] EnhancedFamilyPlanCheckUseCase loaded');
+  debugLog('[Container] EnhancedFamilyPlanCheckUseCase loaded');
 } catch (error) {
   console.warn('[Container] EnhancedFamilyPlanCheckUseCase load failed:', error.message);
 }
 
 // 레포지토리 - PauseSheet, ResumeSheet, DeleteSheet 추가
-console.log('[Container] Loading sheet repositories...');
+debugLog('[Container] Loading sheet repositories...');
 let PauseSheetRepository, ResumeSheetRepository, DeleteSheetRepository, FamilyPlanSheetRepository;
 
 try {
   PauseSheetRepository = require('./infrastructure/repositories/PauseSheetRepository');
-  console.log('[Container] PauseSheetRepository loaded');
+  debugLog('[Container] PauseSheetRepository loaded');
 } catch (error) {
   console.warn('[Container] PauseSheetRepository load failed:', error.message);
 }
 
 try {
   ResumeSheetRepository = require('./infrastructure/repositories/ResumeSheetRepository');
-  console.log('[Container] ResumeSheetRepository loaded');
+  debugLog('[Container] ResumeSheetRepository loaded');
 } catch (error) {
   console.warn('[Container] ResumeSheetRepository load failed:', error.message);
 }
 
 try {
   DeleteSheetRepository = require('./infrastructure/repositories/DeleteSheetRepository');
-  console.log('[Container] DeleteSheetRepository loaded');
+  debugLog('[Container] DeleteSheetRepository loaded');
 } catch (error) {
   console.warn('[Container] DeleteSheetRepository load failed:', error.message);
 }
 
 try {
   FamilyPlanSheetRepository = require('./infrastructure/repositories/FamilyPlanSheetRepository');
-  console.log('[Container] FamilyPlanSheetRepository loaded');
+  debugLog('[Container] FamilyPlanSheetRepository loaded');
 } catch (error) {
   console.warn('[Container] FamilyPlanSheetRepository load failed:', error.message);
 }
 
 // 가족요금제 관련 서비스
-console.log('[Container] Loading family plan services...');
+debugLog('[Container] Loading family plan services...');
 let ProxyManagerAdapter, SunbrowserAdapter, FamilyPlanDetectionService;
 let GoogleAuthService, ProxySwitchService, YouTubeFamilyPlanService, FamilyPlanWorkflowService;
 
 try {
   ProxyManagerAdapter = require('./infrastructure/adapters/ProxyManagerAdapter');
-  console.log('[Container] ProxyManagerAdapter loaded');
+  debugLog('[Container] ProxyManagerAdapter loaded');
 } catch (error) {
   console.warn('[Container] ProxyManagerAdapter load failed:', error.message);
 }
 
 try {
   SunbrowserAdapter = require('./infrastructure/adapters/SunbrowserAdapter');
-  console.log('[Container] SunbrowserAdapter loaded');
+  debugLog('[Container] SunbrowserAdapter loaded');
 } catch (error) {
   console.warn('[Container] SunbrowserAdapter load failed:', error.message);
 }
 
 try {
   FamilyPlanDetectionService = require('./services/FamilyPlanDetectionService');
-  console.log('[Container] FamilyPlanDetectionService loaded');
+  debugLog('[Container] FamilyPlanDetectionService loaded');
 } catch (error) {
   console.warn('[Container] FamilyPlanDetectionService load failed:', error.message);
 }
 
 try {
   GoogleAuthService = require('./services/GoogleAuthService');
-  console.log('[Container] GoogleAuthService loaded');
+  debugLog('[Container] GoogleAuthService loaded');
 } catch (error) {
   console.warn('[Container] GoogleAuthService load failed:', error.message);
 }
 
 try {
   ProxySwitchService = require('./services/ProxySwitchService');
-  console.log('[Container] ProxySwitchService loaded');
+  debugLog('[Container] ProxySwitchService loaded');
 } catch (error) {
   console.warn('[Container] ProxySwitchService load failed:', error.message);
 }
 
 try {
   YouTubeFamilyPlanService = require('./services/YouTubeFamilyPlanService');
-  console.log('[Container] YouTubeFamilyPlanService loaded');
+  debugLog('[Container] YouTubeFamilyPlanService loaded');
 } catch (error) {
   console.warn('[Container] YouTubeFamilyPlanService load failed:', error.message);
 }
 
 try {
   FamilyPlanWorkflowService = require('./services/FamilyPlanWorkflowService');
-  console.log('[Container] FamilyPlanWorkflowService loaded');
+  debugLog('[Container] FamilyPlanWorkflowService loaded');
 } catch (error) {
   console.warn('[Container] FamilyPlanWorkflowService load failed:', error.message);
 }
@@ -382,7 +403,7 @@ const PopupService = require('./services/PopupService');
 
 // AdsPower ID 매핑 서비스
 const AdsPowerIdMappingService = require('./services/AdsPowerIdMappingService');
-console.log('[Container] AdsPowerIdMappingService loaded');
+debugLog('[Container] AdsPowerIdMappingService loaded');
 
 // 날짜 파싱 서비스
 const EnhancedDateParsingService = require('./services/EnhancedDateParsingService');
@@ -403,6 +424,8 @@ const ParallelFamilyPlanCheckUseCase = require('./application/usecases/ParallelF
 // IP 및 프록시 관련 서비스
 const ProxyRotationService = require('./services/ProxyRotationService');
 const IPService = require('./services/IPService');
+const HashBasedProxyMappingService = require('./services/HashBasedProxyMappingService');
+const ProxySheetRepository = require('./infrastructure/repositories/ProxySheetRepository');
 
 // 가족 요금제 기존 계정 확인 UseCase
 const ExistingFamilyPlanCheckUseCase = require('./application/usecases/ExistingFamilyPlanCheckUseCase');
@@ -410,14 +433,14 @@ const ExistingFamilyPlanCheckUseCase = require('./application/usecases/ExistingF
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 백업카드 변경 관련 (Phase 1-6)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-console.log('[Container] Loading backup card modules...');
+debugLog('[Container] Loading backup card modules...');
 const BackupCardChangeUseCase = require('./application/usecases/BackupCardChangeUseCase');
 const BackupCardSheetRepository = require('./infrastructure/repositories/BackupCardSheetRepository');
 const BackupCardService = require('./services/BackupCardService');
 const YouTubePaymentAdapter = require('./infrastructure/adapters/YouTubePaymentAdapter');
 const ErrorClassifier = require('./utils/ErrorClassifier');
 const backupCardMultiLanguage = require('./infrastructure/config/backup-card-multilanguage');
-console.log('[Container] Backup card modules loaded');
+debugLog('[Container] Backup card modules loaded');
 
 /**
  * 비동기 레포지토리 래퍼 - 지연 초기화 패턴
@@ -434,11 +457,14 @@ function createLazyRepository(RepositoryClass, config) {
         const methodsNeedingInit = [
           'getAll', 'getById', 'save', 'update', 'delete',
           'getAdsPowerProfiles', 'getPauseList', 'getResumeList',
-          'getPauseTargets', 'getResumeTargets', 
+          'getPauseTargets', 'getResumeTargets',
           'updatePauseStatus', 'updateResumeStatus',
           'updatePauseResult', 'updateResumeResult',
           'createProfileMapping', 'getPauseTasksWithMapping',
-          'getResumeTasksWithMapping'
+          'getResumeTasksWithMapping',
+          // 프록시 Repository 메서드
+          'getProxiesByCountry', 'getAllProxies', 'updateProxyUsage',
+          'incrementFailureCount', 'resetFailureCount', 'getProxyStats'
         ];
         
         if (methodsNeedingInit.includes(prop) && typeof target[prop] === 'function') {
@@ -447,7 +473,7 @@ function createLazyRepository(RepositoryClass, config) {
             if (!target.initialized && !initPromise) {
               initPromise = target.initialize().catch(err => {
                 console.warn(`[Container] Repository initialization failed: ${err.message}`);
-                console.log('[Container] Repository will work in limited mode');
+                debugLog('[Container] Repository will work in limited mode');
                 target.initialized = true; // 실패해도 계속 진행
               });
             }
@@ -815,7 +841,8 @@ function setupContainer(initialConfig = {}) {
         config: container.resolve('config'),
         dateParser: container.resolve('dateParser'),  // 날짜 파싱 서비스 주입
         buttonService: container.resolve('buttonService'),  // ButtonInteractionService 주입
-        mappingService: container.resolve('adsPowerIdMappingService')  // AdsPowerIdMappingService 주입
+        mappingService: container.resolve('adsPowerIdMappingService'),  // AdsPowerIdMappingService 주입
+        hashProxyMapper: container.resolve('hashProxyMapper')  // 해시 기반 프록시 매핑 서비스 주입
       })),
 
     // 갱신확인 일시중지 유스케이스
@@ -848,7 +875,8 @@ function setupContainer(initialConfig = {}) {
         detailedErrorLogger: container.resolve('detailedErrorLogger'),
         config: container.resolve('config'),
         dateParser: container.resolve('dateParser'),  // 날짜 파싱 서비스 주입
-        adsPowerIdMappingService: container.resolve('adsPowerIdMappingService')  // AdsPower ID 매핑 서비스 주입
+        adsPowerIdMappingService: container.resolve('adsPowerIdMappingService'),  // AdsPower ID 매핑 서비스 주입
+        hashProxyMapper: container.resolve('hashProxyMapper')  // 해시 기반 프록시 매핑 서비스 주입
       })) : asClass(ImprovedResumeSubscriptionUseCase).inject(() => ({
         adsPowerAdapter: container.resolve('adsPowerAdapter'),
         youtubeAdapter: container.resolve('youtubeAdapter'),
@@ -1172,6 +1200,23 @@ function setupContainer(initialConfig = {}) {
       });
     }).singleton(),
 
+    // 프록시 시트 Repository 등록 (Lazy Proxy Pattern)
+    proxySheetRepository: createLazyRepository(
+      ProxySheetRepository,
+      {
+        spreadsheetId: config.googleSheetsId || process.env.GOOGLE_SHEETS_ID,
+        serviceAccountPath: config.serviceAccountPath || path.join(__dirname, '..', 'credentials', 'service-account.json')
+      }
+    ),
+
+    // 해시 기반 프록시 매핑 서비스 등록
+    hashProxyMapper: asFunction(() => {
+      return new HashBasedProxyMappingService({
+        proxySheetRepository: container.resolve('proxySheetRepository'),
+        logger: container.resolve('logger')
+      });
+    }).singleton(),
+
     // 가족 요금제 기존 계정 확인 UseCase 등록
     existingFamilyPlanCheckUseCase: asClass(ExistingFamilyPlanCheckUseCase)
       .inject(() => ({
@@ -1321,13 +1366,13 @@ function setupContainer(initialConfig = {}) {
  * 컨테이너 팩토리
  */
 function createApplicationContainer(config = {}) {
-  console.log('[Container] Creating application container...');
+  debugLog('[Container] Creating application container...');
   return setupContainer(config);
 }
 
-console.log('[Container] Exporting module...');
+debugLog('[Container] Exporting module...');
 module.exports = {
   setupContainer,
   createApplicationContainer
 };
-console.log('[Container] Module exported successfully');
+debugLog('[Container] Module exported successfully');

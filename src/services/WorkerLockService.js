@@ -1,14 +1,21 @@
 /**
- * WorkerLockService - 분산 워커 잠금 관리 서비스
+ * WorkerLockService v2.11 - 분산 워커 잠금 관리 서비스
  *
  * Google Sheets J열을 사용한 분산 잠금 메커니즘
  * - 여러 PC에서 동시 작업 시 충돌 방지
- * - 15분 초과 잠금 자동 무효화
+ * - 5분 초과 잠금 자동 무효화 (v2.11: 15분 → 5분으로 단축)
  */
 const os = require('os');
 
 class WorkerLockService {
-  constructor({ sheetsRepository, logger, debugMode = false, lockExpiryMinutes = 15 } = {}) {
+  /**
+   * @param {Object} options
+   * @param {Object} options.sheetsRepository - Google Sheets Repository
+   * @param {Object} options.logger - 로거
+   * @param {boolean} options.debugMode - 디버그 모드
+   * @param {number} options.lockExpiryMinutes - 잠금 만료 시간 (분) - 기본값 5분 (v2.11)
+   */
+  constructor({ sheetsRepository, logger, debugMode = false, lockExpiryMinutes = 5 } = {}) {
     this.sheetsRepository = sheetsRepository;
     this.logger = logger || console;
     this.debugMode = debugMode;

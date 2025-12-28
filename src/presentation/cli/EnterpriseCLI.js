@@ -1,21 +1,25 @@
-console.log('[EnterpriseCLI] Loading dependencies...');
+// [v2.8] 조건부 로깅 헬퍼
+const DEBUG_STARTUP = process.env.DEBUG_STARTUP === 'true';
+const debugLog = (msg) => { if (DEBUG_STARTUP) console.log(msg); };
+
+debugLog('[EnterpriseCLI] Loading dependencies...');
 
 const inquirer = require('inquirer').default || require('inquirer');
-console.log('[EnterpriseCLI] inquirer loaded');
+debugLog('[EnterpriseCLI] inquirer loaded');
 
 const chalk = require('chalk');
-console.log('[EnterpriseCLI] chalk loaded');
+debugLog('[EnterpriseCLI] chalk loaded');
 
 const ora = require('ora').default || require('ora');
-console.log('[EnterpriseCLI] ora loaded');
+debugLog('[EnterpriseCLI] ora loaded');
 
 const Table = require('cli-table3');
-console.log('[EnterpriseCLI] cli-table3 loaded');
+debugLog('[EnterpriseCLI] cli-table3 loaded');
 
-console.log('[EnterpriseCLI] Loading container...');
+debugLog('[EnterpriseCLI] Loading container...');
 // 전체 컨테이너 사용 (enhancedResumeSubscriptionUseCase 포함)
 const { setupContainer } = require('../../container');
-console.log('[EnterpriseCLI] container loaded');
+debugLog('[EnterpriseCLI] container loaded');
 
 // 통합워커 기본값 (단일 소스)
 const WORKER_DEFAULTS = require('../../config/workerDefaults');
@@ -25,19 +29,19 @@ let WorkingAuthenticationService = null;
 let GoogleLoginHelperMinimal = null;
 
 try {
-  console.log('[EnterpriseCLI] Loading WorkingAuthenticationService...');
+  debugLog('[EnterpriseCLI] Loading WorkingAuthenticationService...');
   WorkingAuthenticationService = require('../../services/WorkingAuthenticationService');
-  console.log('[EnterpriseCLI] WorkingAuthenticationService loaded');
+  debugLog('[EnterpriseCLI] WorkingAuthenticationService loaded');
 } catch (e) {
-  console.log('[EnterpriseCLI] WorkingAuthenticationService 로드 실패, Mock 사용');
+  debugLog('[EnterpriseCLI] WorkingAuthenticationService 로드 실패, Mock 사용');
 }
 
 try {
-  console.log('[EnterpriseCLI] Loading GoogleLoginHelperMinimal...');
+  debugLog('[EnterpriseCLI] Loading GoogleLoginHelperMinimal...');
   GoogleLoginHelperMinimal = require('../../infrastructure/adapters/GoogleLoginHelperMinimal');
-  console.log('[EnterpriseCLI] GoogleLoginHelperMinimal loaded');
+  debugLog('[EnterpriseCLI] GoogleLoginHelperMinimal loaded');
 } catch (e) {
-  console.log('[EnterpriseCLI] GoogleLoginHelperMinimal 로드 실패, Mock 사용');
+  debugLog('[EnterpriseCLI] GoogleLoginHelperMinimal 로드 실패, Mock 사용');
 }
 
 /**
@@ -114,21 +118,30 @@ class EnterpriseCLI {
         // 추가 정리 작업이 필요한 경우 여기에
       });
       
-      // 연결 테스트
+      // [v2.8] 네트워크 초기화 병렬화 (AdsPower + Google Sheets 동시 연결)
       const adsPowerAdapter = this.container.resolve('adsPowerAdapter');
-      const connected = await adsPowerAdapter.checkConnection();
-      
+      this.spinner.text = '연결 확인 중 (AdsPower + Google Sheets)...';
+
+      const [adsPowerResult, sheetsResult] = await Promise.allSettled([
+        adsPowerAdapter.checkConnection(),
+        this.loadProfileMapping()
+      ]);
+
+      // AdsPower 연결 결과 확인
+      const connected = adsPowerResult.status === 'fulfilled' && adsPowerResult.value;
       if (!connected) {
         this.spinner.fail('AdsPower API 연결 실패');
         console.log(chalk.yellow('\nAdsPower 브라우저가 실행 중인지 확인하세요.'));
         process.exit(1);
       }
-      
-      this.spinner.text = 'Google Sheets 연결 중...';
-      
-      // Google Sheets 매핑 정보 로드
-      await this.loadProfileMapping();
-      
+
+      // Google Sheets 연결 결과 확인 (실패해도 계속 진행)
+      if (sheetsResult.status === 'rejected') {
+        console.log(chalk.yellow(`\n⚠️ Google Sheets 연결 실패: ${sheetsResult.reason?.message || '알 수 없는 오류'}`));
+        console.log(chalk.gray('프로필 매핑 없이 계속 진행합니다.\n'));
+        this.profileMapping = new Map();
+      }
+
       this.spinner.succeed('Enterprise CLI 초기화 완료');
       
       // 초기화 상태 표시

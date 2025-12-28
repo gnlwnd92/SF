@@ -13,11 +13,13 @@ const { languages, detectLanguage } = require('../../infrastructure/config/multi
 const UnifiedSheetsUpdateService = require('../../services/UnifiedSheetsUpdateService');
 const PageStateAnalyzer = require('../../services/PageStateAnalyzer');
 const NavigationStrategy = require('../../services/NavigationStrategy');
-// 프록시 풀 설정 추가
+// 프록시 풀 설정 추가 (폴백용)
 const { getRandomProxy, getProxyPoolStatus } = require('../../infrastructure/config/proxy-pools');
+// 해시 기반 프록시 매핑 서비스 (의존성 주입으로 전달됨)
 // Frame 안전성 처리를 위한 헬퍼 추가
 const FrameSafetyHandler = require('../../utils/FrameSafetyHandler');
 const SafeClickWrapper = require('../../utils/SafeClickWrapper');
+const IPService = require('../../services/IPService');
 
 class EnhancedPauseSubscriptionUseCase {
   constructor({
@@ -31,7 +33,8 @@ class EnhancedPauseSubscriptionUseCase {
     detailedErrorLogger,  // 상세 에러 로거 추가
     dateParser,  // 날짜 파싱 서비스 추가
     buttonService,  // ButtonInteractionService 추가
-    mappingService  // ProfileMappingService 추가
+    mappingService,  // ProfileMappingService 추가
+    hashProxyMapper  // 해시 기반 프록시 매핑 서비스 추가
   }) {
     // config를 먼저 저장 (다른 초기화에서 사용하기 위해)
     this.config = config || {};
@@ -46,11 +49,14 @@ class EnhancedPauseSubscriptionUseCase {
     this.dateParser = dateParser;  // 날짜 파싱 서비스 저장
     this.buttonService = buttonService;  // ButtonInteractionService 저장
     this.mappingService = mappingService;  // ProfileMappingService 저장
+    this.hashProxyMapper = hashProxyMapper;  // 해시 기반 프록시 매핑 서비스 저장
     this.page = null; // 페이지 참조 저장용
     this.currentLanguage = 'en';
     this.pauseInfo = {};
     this.managementPageOpened = false; // 멤버십 관리 페이지 열림 여부 추적
     this.actualProfileId = null;  // 실제 사용된 프로필 ID 추적
+    this.usedProxyId = null;  // 사용된 프록시 ID 추적 (통합워커 기록용)
+    this.ipService = new IPService({ debugMode: false });  // IP 확인 서비스
     
     // 개선된 인증 서비스 초기화 (계정 선택 페이지 및 2FA 처리)
     this.authService = new ImprovedAuthenticationService({
@@ -142,6 +148,8 @@ class EnhancedPauseSubscriptionUseCase {
       resumeDate: null,
       nextBillingDate: null,
       language: null,  // 감지된 언어 (통합워커용)
+      browserIP: null,  // 브라우저 IP (통합워커 기록용)
+      proxyId: null,    // 사용된 프록시 ID (통합워커 기록용)
       error: null,
       duration: 0
     };
@@ -171,7 +179,10 @@ class EnhancedPauseSubscriptionUseCase {
       if (!browser) {
         throw new Error('브라우저 연결 실패');
       }
-      
+
+      // 사용된 프록시 ID 저장 (통합워커 기록용)
+      result.proxyId = this.usedProxyId;
+
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.endStep({ browserConnected: true });
       }
@@ -182,6 +193,14 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       await this.navigateToPremiumPage(browser);
+
+      // 브라우저 IP 확인 (통합워커 기록용)
+      try {
+        result.browserIP = await this.ipService.getCurrentIP(this.page);
+        console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
+      } catch (ipError) {
+        console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
+      }
 
       // SafeClickWrapper 초기화 (페이지 로드 후)
       this.safeClickWrapper = new SafeClickWrapper(this.page, {
@@ -863,15 +882,62 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 특정 ID로 브라우저 연결 (내부 메서드)
+   * @param {string} profileId - AdsPower 프로필 ID
+   * @param {string} email - 계정 이메일 (해시 기반 프록시 매핑용)
    */
-  async _connectBrowserWithId(profileId) {
+  async _connectBrowserWithId(profileId, email = null) {
     try {
+      // [v2.10] 프록시 변경 전 기존 브라우저 종료 (필수!)
+      // 프록시 설정(updateProfile)은 프로필 설정만 변경하고, 실행 중인 브라우저에는 적용되지 않음
+      // 따라서 프록시 변경 시 기존 브라우저를 먼저 닫아야 새 프록시가 적용됨
+      console.log(chalk.gray('  🔄 기존 브라우저 확인 및 정리 중...'));
+      try {
+        await this.adsPowerAdapter.closeBrowser(profileId);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(chalk.gray('  ✅ 기존 브라우저 종료됨'));
+      } catch (closeError) {
+        // 브라우저가 없거나 이미 종료된 경우 무시
+        console.log(chalk.gray('  ℹ️ 기존 브라우저 없음 또는 이미 종료됨'));
+      }
+
       // 프록시 설정 (환경변수로 제어)
       const useProxy = process.env.USE_PROXY !== 'false';
 
       if (useProxy) {
         console.log(chalk.cyan('  🌐 한국 프록시 설정 중...'));
-        const krProxy = getRandomProxy('kr');
+
+        let krProxy;
+
+        // 해시 기반 프록시 매핑 시도 (hashProxyMapper가 있는 경우)
+        if (this.hashProxyMapper) {
+          try {
+            if (email) {
+              // 이메일이 있으면 해시 기반 매핑 (동일 이메일 → 동일 프록시)
+              const mappingInfo = await this.hashProxyMapper.getMappingInfo(email, 'kr');
+              krProxy = await this.hashProxyMapper.getProxyForAccount(email, 'kr');
+              this.usedProxyId = mappingInfo.proxyId || null;
+              console.log(chalk.cyan(`  🔐 해시 기반 프록시 매핑: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+            } else {
+              // 이메일 없으면 시트에서 랜덤 선택 (Sticky 세션 프록시 사용)
+              console.log(chalk.yellow('  ⚠️ 이메일 정보 없음 - 시트에서 랜덤 프록시 선택'));
+              const randomResult = await this.hashProxyMapper.getRandomProxyFromSheet('kr');
+              krProxy = randomResult.proxy;
+              this.usedProxyId = randomResult.proxyId;
+              console.log(chalk.cyan(`  🎲 시트 랜덤 프록시: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+            }
+          } catch (hashError) {
+            console.log(chalk.yellow(`  ⚠️ 해시 프록시 조회 실패: ${hashError.message}`));
+            console.log(chalk.yellow('  ℹ️ 최종 폴백: 하드코딩 랜덤 프록시 사용'));
+            krProxy = getRandomProxy('kr');
+            this.usedProxyId = 'hardcoded_random';  // 하드코딩 프록시 사용 표시
+          }
+        } else {
+          // hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용
+          console.log(chalk.yellow('  ⚠️ hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용'));
+          krProxy = getRandomProxy('kr');
+          this.usedProxyId = 'hardcoded_random';
+        }
+
         console.log(chalk.cyan(`  🇰🇷 한국 프록시 사용: ${krProxy.proxy_host}:${krProxy.proxy_port}`));
 
         // AdsPower API로 프록시 업데이트
@@ -942,7 +1008,7 @@ class EnhancedPauseSubscriptionUseCase {
       try {
         console.log(chalk.blue(`\n🔧 AdsPower ID 시도 1: ${profileId}`));
         attemptedIds.push(profileId);
-        return await this._connectBrowserWithId(profileId);
+        return await this._connectBrowserWithId(profileId, email);
       } catch (error) {
         console.log(chalk.red(`  ❌ 첫 번째 ID 실패: ${error.message}`));
         lastError = error;
@@ -981,7 +1047,7 @@ class EnhancedPauseSubscriptionUseCase {
           attemptedIds.push(altId);
 
           // 대체 ID로 성공하면 해당 ID 반환
-          const result = await this._connectBrowserWithId(altId);
+          const result = await this._connectBrowserWithId(altId, email);
 
           // 성공하면 사용한 ID 저장
           this.actualProfileId = altId;
@@ -3257,9 +3323,17 @@ class EnhancedPauseSubscriptionUseCase {
       timeout: 15000
     });
     await new Promise(r => setTimeout(r, 3000));
-    
-    // 멤버십 관리 버튼 클릭
-    await this.clickManageButton();
+
+    // [v2.10] 멤버십 관리 버튼 클릭 (재시도 로직 추가)
+    let manageClicked = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      manageClicked = await this.clickManageButton();
+      if (manageClicked) break;
+      if (attempt < 3) {
+        this.log(`⚠️ Manage 버튼 클릭 실패 (시도 ${attempt}/3) - 3초 후 재시도...`, 'warning');
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
     
     const lang = languages[this.currentLanguage];
     

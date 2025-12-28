@@ -15,10 +15,12 @@ const PageStateAnalyzer = require('../../services/PageStateAnalyzer');
 const NavigationStrategy = require('../../services/NavigationStrategy');
 const DateParsingService = require('../../services/DateParsingService');
 const UniversalStatusDetector = require('../../services/UniversalStatusDetector');
-// 프록시 풀 설정 추가
+// 프록시 풀 설정 추가 (폴백용)
 const { getRandomProxy, getProxyPoolStatus } = require('../../infrastructure/config/proxy-pools');
+// 해시 기반 프록시 매핑 서비스 (의존성 주입으로 전달됨)
 // Google Sheets API
 const { google } = require('googleapis');
+const IPService = require('../../services/IPService');
 
 class EnhancedResumeSubscriptionUseCase {
   constructor({
@@ -31,7 +33,8 @@ class EnhancedResumeSubscriptionUseCase {
     logger,
     config = {},
     dateParser,  // 날짜 파싱 서비스 추가
-    adsPowerIdMappingService  // AdsPower ID 매핑 서비스 추가
+    adsPowerIdMappingService,  // AdsPower ID 매핑 서비스 추가
+    hashProxyMapper  // 해시 기반 프록시 매핑 서비스 추가
   }) {
     this.adsPowerAdapter = adsPowerAdapter;
     this.youtubeAdapter = youtubeAdapter;
@@ -41,6 +44,7 @@ class EnhancedResumeSubscriptionUseCase {
     this.logger = logger || console;
     this.dateParser = dateParser;  // 날짜 파싱 서비스 저장
     this.adsPowerIdMappingService = adsPowerIdMappingService;  // AdsPower ID 매핑 서비스 저장
+    this.hashProxyMapper = hashProxyMapper;  // 해시 기반 프록시 매핑 서비스 저장
     this.currentLanguage = 'en';
     this.resumeInfo = {};
     this.savedNextBillingDate = null; // 이전에 저장한 날짜 (일시중지와 동일하게)
@@ -48,6 +52,8 @@ class EnhancedResumeSubscriptionUseCase {
     this.currentPage = null; // 현재 페이지 추적
     this.consoleLogs = []; // 콘솔 로그 수집
     this.networkLogs = []; // 네트워크 로그 수집
+    this.usedProxyId = null;  // 사용된 프록시 ID 추적 (통합워커 기록용)
+    this.ipService = new IPService({ debugMode: false });  // IP 확인 서비스
     
     // DI 컨테이너에서 주입받은 인증 서비스 사용 (더 이상 직접 생성하지 않음)
     this.authService = authService || new ImprovedAuthenticationService({
@@ -99,8 +105,9 @@ class EnhancedResumeSubscriptionUseCase {
       status: null,
       resumeDate: null,
       nextBillingDate: null,
-      browserIP: null,
-      language: null,  // 감지된 언어 (통합워커용)
+      browserIP: null,   // 브라우저 IP (통합워커 기록용)
+      proxyId: null,     // 사용된 프록시 ID (통합워커 기록용)
+      language: null,    // 감지된 언어 (통합워커용)
       error: null,
       duration: 0,
       timedOut: false,
@@ -192,6 +199,9 @@ class EnhancedResumeSubscriptionUseCase {
         throw new Error('브라우저 연결 실패');
       }
 
+      // 사용된 프록시 ID 저장 (통합워커 기록용)
+      result.proxyId = this.usedProxyId;
+
       // 실제 사용된 AdsPower ID 업데이트
       if (this.actualProfileId && this.actualProfileId !== profileId) {
         console.log(chalk.cyan(`  🆔 실제 사용 ID: ${this.actualProfileId}`));
@@ -214,6 +224,14 @@ class EnhancedResumeSubscriptionUseCase {
       // updateProgress 함수 전달 (shouldSkipProfile 체크 함수도 전달)
       const checkShouldSkip = () => shouldSkipProfile;
       await this.navigateToPremiumPage(browser, updateProgress, checkShouldSkip);
+
+      // 브라우저 IP 확인 (통합워커 기록용)
+      try {
+        result.browserIP = await this.ipService.getCurrentIP(this.page);
+        console.log(chalk.cyan(`  🌐 브라우저 IP: ${result.browserIP}`));
+      } catch (ipError) {
+        console.log(chalk.yellow(`  ⚠️ IP 확인 실패: ${ipError.message}`));
+      }
 
       // 휴먼라이크 헬퍼 초기화 (베지어 곡선 + CDP 네이티브 입력)
       if (this.authService && this.authService.humanLikeMotion) {
@@ -743,7 +761,7 @@ class EnhancedResumeSubscriptionUseCase {
       try {
         console.log(chalk.blue(`\n🔧 AdsPower ID 시도 1: ${profileId}`));
         attemptedIds.push(profileId);
-        const result = await this._connectBrowserWithId(profileId);
+        const result = await this._connectBrowserWithId(profileId, email);
 
         // 결과 확인
         if (!result) {
@@ -797,7 +815,7 @@ class EnhancedResumeSubscriptionUseCase {
           attemptedIds.push(altId);
 
           // 대체 ID로 성공하면 해당 ID 반환
-          const result = await this._connectBrowserWithId(altId);
+          const result = await this._connectBrowserWithId(altId, email);
 
           // 결과 확인
           if (!result) {
@@ -824,15 +842,62 @@ class EnhancedResumeSubscriptionUseCase {
 
   /**
    * 특정 ID로 브라우저 연결 (내부 메서드)
+   * @param {string} profileId - AdsPower 프로필 ID
+   * @param {string} email - 계정 이메일 (해시 기반 프록시 매핑용)
    */
-  async _connectBrowserWithId(profileId) {
+  async _connectBrowserWithId(profileId, email = null) {
     try {
+      // [v2.10] 프록시 변경 전 기존 브라우저 종료 (필수!)
+      // 프록시 설정(updateProfile)은 프로필 설정만 변경하고, 실행 중인 브라우저에는 적용되지 않음
+      // 따라서 프록시 변경 시 기존 브라우저를 먼저 닫아야 새 프록시가 적용됨
+      console.log(chalk.gray('  🔄 기존 브라우저 확인 및 정리 중...'));
+      try {
+        await this.adsPowerAdapter.closeBrowser(profileId);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(chalk.gray('  ✅ 기존 브라우저 종료됨'));
+      } catch (closeError) {
+        // 브라우저가 없거나 이미 종료된 경우 무시
+        console.log(chalk.gray('  ℹ️ 기존 브라우저 없음 또는 이미 종료됨'));
+      }
+
       // 프록시 설정 (환경변수로 제어)
       const useProxy = process.env.USE_PROXY !== 'false';
 
       if (useProxy) {
         console.log(chalk.cyan('  🌐 한국 프록시 설정 중...'));
-        const krProxy = getRandomProxy('kr');
+
+        let krProxy;
+
+        // 해시 기반 프록시 매핑 시도 (hashProxyMapper가 있는 경우)
+        if (this.hashProxyMapper) {
+          try {
+            if (email) {
+              // 이메일이 있으면 해시 기반 매핑 (동일 이메일 → 동일 프록시)
+              const mappingInfo = await this.hashProxyMapper.getMappingInfo(email, 'kr');
+              krProxy = await this.hashProxyMapper.getProxyForAccount(email, 'kr');
+              this.usedProxyId = mappingInfo.proxyId || null;
+              console.log(chalk.cyan(`  🔐 해시 기반 프록시 매핑: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+            } else {
+              // 이메일 없으면 시트에서 랜덤 선택 (Sticky 세션 프록시 사용)
+              console.log(chalk.yellow('  ⚠️ 이메일 정보 없음 - 시트에서 랜덤 프록시 선택'));
+              const randomResult = await this.hashProxyMapper.getRandomProxyFromSheet('kr');
+              krProxy = randomResult.proxy;
+              this.usedProxyId = randomResult.proxyId;
+              console.log(chalk.cyan(`  🎲 시트 랜덤 프록시: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+            }
+          } catch (hashError) {
+            console.log(chalk.yellow(`  ⚠️ 해시 프록시 조회 실패: ${hashError.message}`));
+            console.log(chalk.yellow('  ℹ️ 최종 폴백: 하드코딩 랜덤 프록시 사용'));
+            krProxy = getRandomProxy('kr');
+            this.usedProxyId = 'hardcoded_random';  // 하드코딩 프록시 사용 표시
+          }
+        } else {
+          // hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용
+          console.log(chalk.yellow('  ⚠️ hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용'));
+          krProxy = getRandomProxy('kr');
+          this.usedProxyId = 'hardcoded_random';
+        }
+
         console.log(chalk.cyan(`  🇰🇷 한국 프록시 사용: ${krProxy.proxy_host}:${krProxy.proxy_port}`));
 
         // AdsPower API로 프록시 업데이트
@@ -2115,22 +2180,41 @@ class EnhancedResumeSubscriptionUseCase {
     if (buttonsAlreadyVisible.visible) {
       this.log(`Resume/Pause 버튼 이미 표시됨: "${buttonsAlreadyVisible.buttonText}" - Manage 클릭 스킵`, 'info');
     } else {
-      // 멤버십 관리 버튼 클릭 시도
-      const clickTimeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Manage 버튼 클릭 타임아웃')), 15000)
-      );
+      // [v2.10] 멤버십 관리 버튼 클릭 시도 (최대 3회 재시도)
+      // 페이지 전환 직후 DOM이 완전히 렌더링되기 전에 클릭하면 실패할 수 있음
+      const maxRetries = 3;
+      let clicked = false;
+      let lastError = null;
 
-      const clicked = await Promise.race([
-        this.clickManageButton(),
-        clickTimeout
-      ]);
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const clickTimeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Manage 버튼 클릭 타임아웃')), 15000)
+          );
 
-      if (!clicked) {
-        this.log('❌ Manage membership 버튼 클릭 실패', 'error');
-        throw new Error('Manage membership 버튼 클릭 실패 - 상태 확인 불가능');
+          clicked = await Promise.race([
+            this.clickManageButton(),
+            clickTimeout
+          ]);
+
+          if (clicked) {
+            this.log(`✅ Manage 버튼 클릭 성공 (시도 ${attempt}/${maxRetries})`, 'success');
+            break;
+          }
+        } catch (clickError) {
+          lastError = clickError;
+        }
+
+        if (!clicked && attempt < maxRetries) {
+          this.log(`⚠️ Manage 버튼 클릭 실패 (시도 ${attempt}/${maxRetries}) - ${3}초 후 재시도...`, 'warning');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
       }
 
-      this.log('✅ Manage 버튼 클릭 성공', 'success');
+      if (!clicked) {
+        this.log('❌ Manage membership 버튼 클릭 실패 (모든 재시도 소진)', 'error');
+        throw new Error('Manage membership 버튼 클릭 실패 - 상태 확인 불가능');
+      }
     }
 
     // 페이지가 완전히 로드될 때까지 대기 (중요!)

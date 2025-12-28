@@ -431,7 +431,7 @@ class SunbrowserAdapter extends AdsPowerAdapter {
         user_proxy_config: {
           proxy_type: proxy.type || "http",
           proxy_host: proxy.host,
-          proxy_port: proxy.port,
+          proxy_port: String(proxy.port),
           proxy_user: proxy.username,
           proxy_password: proxy.password,
           proxy_soft: "other"

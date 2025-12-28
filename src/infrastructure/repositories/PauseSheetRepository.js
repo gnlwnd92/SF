@@ -9,6 +9,9 @@ const axios = require('axios');
 const ErrorClassifier = require('../../utils/ErrorClassifier');
 
 class PauseSheetRepository {
+  // [v2.12] 세션당 연결 메시지 1회만 출력
+  static hasLoggedConnection = false;
+
   constructor() {
     this.auth = null;
     this.sheets = null;
@@ -233,12 +236,15 @@ class PauseSheetRepository {
       
       let keyFile = null;
       let keyPath = null;
-      
+
       for (const testPath of possiblePaths) {
         try {
           keyFile = await fs.readFile(testPath, 'utf8');
           keyPath = testPath;
-          console.log(`✅ 서비스 계정 키 파일 로드: ${keyPath}`);
+          // [v2.12] 첫 연결 시에만 키 파일 로드 메시지 출력
+          if (!PauseSheetRepository.hasLoggedConnection) {
+            console.log(`✅ 서비스 계정 키 파일 로드: ${keyPath}`);
+          }
           break;
         } catch (e) {
           // 다음 경로 시도
@@ -275,7 +281,11 @@ class PauseSheetRepository {
         );
       }
 
-      console.log('✅ Google Sheets 연결 성공');
+      // [v2.12] 세션당 연결 성공 메시지 1회만 출력
+      if (!PauseSheetRepository.hasLoggedConnection) {
+        console.log('✅ Google Sheets 연결 성공');
+        PauseSheetRepository.hasLoggedConnection = true;
+      }
       return true;
     } catch (error) {
       console.error('❌ Google Sheets 연결 실패:', error.message);
@@ -1125,8 +1135,8 @@ class PauseSheetRepository {
   // ============================================================
   // 시트 구조:
   //   A: 아이디(이메일), B: 비밀번호, C: 복구이메일, D: 코드(TOTP)
-  //   E: 상태, F: 다음결제일, G: IP, H: 결과
-  //   I: 시간, J: 잠금, K: 결제카드, L: 재시도
+  //   E: 상태, F: 다음결제일, G: IP (누적), H: 결과
+  //   I: 시간, J: 잠금, K: 결제카드, L: 재시도, M: 프록시 (누적)
   // ============================================================
 
   /**
@@ -1398,7 +1408,30 @@ class PauseSheetRepository {
   }
 
   /**
-   * 통합워커 탭의 G열(IP) 업데이트
+   * 통합워커 탭의 G열(IP) 현재 값 조회
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string>} IP 이력
+   */
+  async getIntegratedWorkerIPValue(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!G${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 G열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * 통합워커 탭의 G열(IP) 누적 업데이트
    *
    * @param {number} rowIndex - 행 번호 (1-based)
    * @param {string} ip - IP 주소
@@ -1408,12 +1441,25 @@ class PauseSheetRepository {
     await this.initialize();
 
     try {
+      // 기존 IP 이력 조회
+      const existingIP = await this.getIntegratedWorkerIPValue(rowIndex);
+      const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+      const newEntry = `[${timestamp}] ${ip}`;
+
+      // 누적 (최근 10개까지만 유지)
+      let ipHistory = existingIP ? existingIP.split('\n') : [];
+      ipHistory.push(newEntry);
+      if (ipHistory.length > 10) {
+        ipHistory = ipHistory.slice(-10);  // 최근 10개만 유지
+      }
+      const finalIP = ipHistory.join('\n');
+
       await this.sheets.spreadsheets.values.update({
         spreadsheetId: this.spreadsheetId,
         range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
         valueInputOption: 'RAW',
         requestBody: {
-          values: [[ip]]
+          values: [[finalIP]]
         }
       });
 
@@ -1425,21 +1471,90 @@ class PauseSheetRepository {
   }
 
   /**
+   * 통합워커 탭의 M열(프록시) 현재 값 조회
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string>} 프록시 이력
+   */
+  async getIntegratedWorkerProxyIdValue(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!M${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : '';
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 M열 조회 실패:`, error.message);
+      return '';
+    }
+  }
+
+  /**
+   * 통합워커 탭의 M열(프록시) 누적 업데이트
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} proxyId - 프록시 ID (예: Proxy_kr_7)
+   * @returns {Promise<boolean>}
+   */
+  async updateIntegratedWorkerProxyId(rowIndex, proxyId) {
+    await this.initialize();
+
+    try {
+      if (!proxyId) return true;  // proxyId가 없으면 스킵
+
+      // 기존 프록시ID 이력 조회
+      const existingProxyId = await this.getIntegratedWorkerProxyIdValue(rowIndex);
+      const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+      const newEntry = `[${timestamp}] ${proxyId}`;
+
+      // 누적 (최근 10개까지만 유지)
+      let proxyHistory = existingProxyId ? existingProxyId.split('\n') : [];
+      proxyHistory.push(newEntry);
+      if (proxyHistory.length > 10) {
+        proxyHistory = proxyHistory.slice(-10);  // 최근 10개만 유지
+      }
+      const finalProxyId = proxyHistory.join('\n');
+
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!M${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[finalProxyId]]
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 M열 프록시 업데이트: 행${rowIndex} → "${proxyId}"`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 M열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
    * 통합워커 탭 - 작업 성공 시 일괄 업데이트
-   * E열(상태), H열(결과), G열(IP), L열(재시도 리셋)
+   * E열(상태), H열(결과), G열(IP 누적), M열(프록시 누적), L열(재시도 리셋)
    *
    * @param {number} rowIndex - 행 번호 (1-based)
    * @param {object} data - 업데이트 데이터
    * @param {string} data.newStatus - 새 상태
    * @param {string} data.resultText - 결과 텍스트
    * @param {string} [data.ip] - IP 주소 (선택)
+   * @param {string} [data.proxyId] - 프록시 ID (선택)
+   * @param {string} [data.nextBillingDate] - 다음 결제일 (선택)
    * @returns {Promise<boolean>}
    */
-  async updateIntegratedWorkerOnSuccess(rowIndex, { newStatus, resultText, ip, nextBillingDate }) {
+  async updateIntegratedWorkerOnSuccess(rowIndex, { newStatus, resultText, ip, proxyId, nextBillingDate }) {
     await this.initialize();
 
     try {
       const updateData = [];
+      const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
       // E열: 상태 업데이트
       updateData.push({
@@ -1465,11 +1580,33 @@ class PauseSheetRepository {
         values: [[finalResult]]
       });
 
-      // G열: IP (있으면)
+      // G열: IP 누적 (있으면)
       if (ip) {
+        const existingIP = await this.getIntegratedWorkerIPValue(rowIndex);
+        const newIPEntry = `[${timestamp}] ${ip}`;
+        let ipHistory = existingIP ? existingIP.split('\n') : [];
+        ipHistory.push(newIPEntry);
+        if (ipHistory.length > 10) {
+          ipHistory = ipHistory.slice(-10);  // 최근 10개만 유지
+        }
         updateData.push({
           range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
-          values: [[ip]]
+          values: [[ipHistory.join('\n')]]
+        });
+      }
+
+      // M열: 프록시ID 누적 (있으면)
+      if (proxyId) {
+        const existingProxyId = await this.getIntegratedWorkerProxyIdValue(rowIndex);
+        const newProxyEntry = `[${timestamp}] ${proxyId}`;
+        let proxyHistory = existingProxyId ? existingProxyId.split('\n') : [];
+        proxyHistory.push(newProxyEntry);
+        if (proxyHistory.length > 10) {
+          proxyHistory = proxyHistory.slice(-10);  // 최근 10개만 유지
+        }
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!M${rowIndex}`,
+          values: [[proxyHistory.join('\n')]]
         });
       }
 
@@ -1494,7 +1631,8 @@ class PauseSheetRepository {
       });
 
       const dateInfo = nextBillingDate ? `, 다음결제일→"${nextBillingDate}"` : '';
-      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 성공 업데이트 완료: 상태→"${newStatus}"${dateInfo}`);
+      const proxyInfo = proxyId ? `, 프록시→"${proxyId}"` : '';
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 성공 업데이트 완료: 상태→"${newStatus}"${dateInfo}${proxyInfo}`);
       return true;
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 성공 업데이트 실패:`, error.message);
@@ -1511,13 +1649,16 @@ class PauseSheetRepository {
    * @param {object} data - 업데이트 데이터
    * @param {string} data.newStatus - 새 상태 (만료됨, 계정잠김, reCAPTCHA차단 등)
    * @param {string} data.resultText - 결과 텍스트
+   * @param {string} [data.ip] - 사용한 IP (있으면 G열에 누적)
+   * @param {string} [data.proxyId] - 사용한 프록시 ID (있으면 M열에 누적)
    * @returns {Promise<boolean>}
    */
-  async updateIntegratedWorkerPermanentFailure(rowIndex, { newStatus, resultText }) {
+  async updateIntegratedWorkerPermanentFailure(rowIndex, { newStatus, resultText, ip, proxyId }) {
     await this.initialize();
 
     try {
       const updateData = [];
+      const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
       // E열: 영구 상태로 변경
       updateData.push({
@@ -1535,6 +1676,36 @@ class PauseSheetRepository {
         values: [[finalResult]]
       });
 
+      // G열: IP 누적 (있으면) - 영구 실패 시에도 기록
+      if (ip) {
+        const existingIP = await this.getIntegratedWorkerIPValue(rowIndex);
+        const newIPEntry = `[${timestamp}] ${ip} (${newStatus})`;
+        let ipHistory = existingIP ? existingIP.split('\n') : [];
+        ipHistory.push(newIPEntry);
+        if (ipHistory.length > 10) {
+          ipHistory = ipHistory.slice(-10);
+        }
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
+          values: [[ipHistory.join('\n')]]
+        });
+      }
+
+      // M열: 프록시ID 누적 (있으면) - 영구 실패 시에도 기록
+      if (proxyId) {
+        const existingProxyId = await this.getIntegratedWorkerProxyIdValue(rowIndex);
+        const newProxyEntry = `[${timestamp}] ${proxyId} (${newStatus})`;
+        let proxyHistory = existingProxyId ? existingProxyId.split('\n') : [];
+        proxyHistory.push(newProxyEntry);
+        if (proxyHistory.length > 10) {
+          proxyHistory = proxyHistory.slice(-10);
+        }
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!M${rowIndex}`,
+          values: [[proxyHistory.join('\n')]]
+        });
+      }
+
       // J열: 잠금 해제
       updateData.push({
         range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
@@ -1551,7 +1722,7 @@ class PauseSheetRepository {
         }
       });
 
-      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 영구실패 업데이트: 상태→"${newStatus}"`);
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 영구실패 업데이트: 상태→"${newStatus}"${ip ? `, IP=${ip}` : ''}${proxyId ? `, Proxy=${proxyId}` : ''}`);
       return true;
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 영구실패 업데이트 실패:`, error.message);
@@ -1566,15 +1737,18 @@ class PauseSheetRepository {
    * @param {number} rowIndex - 행 번호 (1-based)
    * @param {object} data - 업데이트 데이터
    * @param {string} data.resultText - 결과 텍스트 (에러 메시지)
+   * @param {string} [data.ip] - 사용한 IP (있으면 G열에 누적)
+   * @param {string} [data.proxyId] - 사용한 프록시 ID (있으면 M열에 누적)
    * @returns {Promise<number>} 새 재시도 횟수
    */
-  async updateIntegratedWorkerOnFailure(rowIndex, { resultText }) {
+  async updateIntegratedWorkerOnFailure(rowIndex, { resultText, ip, proxyId }) {
     await this.initialize();
 
     try {
       // 현재 재시도 횟수
       const currentRetry = await this.getIntegratedWorkerRetryCount(rowIndex);
       const newRetry = currentRetry + 1;
+      const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
       const updateData = [];
 
@@ -1587,6 +1761,36 @@ class PauseSheetRepository {
         range: `${this.integratedWorkerSheetName}!H${rowIndex}`,
         values: [[finalResult]]
       });
+
+      // G열: IP 누적 (있으면) - 실패 시에도 기록
+      if (ip) {
+        const existingIP = await this.getIntegratedWorkerIPValue(rowIndex);
+        const newIPEntry = `[${timestamp}] ${ip} (실패)`;
+        let ipHistory = existingIP ? existingIP.split('\n') : [];
+        ipHistory.push(newIPEntry);
+        if (ipHistory.length > 10) {
+          ipHistory = ipHistory.slice(-10);  // 최근 10개만 유지
+        }
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
+          values: [[ipHistory.join('\n')]]
+        });
+      }
+
+      // M열: 프록시ID 누적 (있으면) - 실패 시에도 기록
+      if (proxyId) {
+        const existingProxyId = await this.getIntegratedWorkerProxyIdValue(rowIndex);
+        const newProxyEntry = `[${timestamp}] ${proxyId} (실패)`;
+        let proxyHistory = existingProxyId ? existingProxyId.split('\n') : [];
+        proxyHistory.push(newProxyEntry);
+        if (proxyHistory.length > 10) {
+          proxyHistory = proxyHistory.slice(-10);  // 최근 10개만 유지
+        }
+        updateData.push({
+          range: `${this.integratedWorkerSheetName}!M${rowIndex}`,
+          values: [[proxyHistory.join('\n')]]
+        });
+      }
 
       // L열: 재시도 +1
       updateData.push({
@@ -1608,7 +1812,7 @@ class PauseSheetRepository {
         }
       });
 
-      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 실패 업데이트 완료: 재시도→${newRetry}`);
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 실패 업데이트 완료: 재시도→${newRetry}${ip ? `, IP=${ip}` : ''}${proxyId ? `, Proxy=${proxyId}` : ''}`);
       return newRetry;
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 실패 업데이트 실패:`, error.message);

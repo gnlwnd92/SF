@@ -229,7 +229,7 @@ class FamilyPlanCheckUseCase {
         proxy_soft: 'other',  // 필수 필드
         proxy_type: 'http',
         proxy_host: proxyConfig.host,
-        proxy_port: parseInt(proxyConfig.port),
+        proxy_port: String(proxyConfig.port),
         proxy_user: proxyConfig.username,
         proxy_password: proxyConfig.password
       },
@@ -274,7 +274,7 @@ class FamilyPlanCheckUseCase {
         proxy_soft: 'other',  // 필수 필드
         proxy_type: 'http',
         proxy_host: proxyConfig.host,
-        proxy_port: parseInt(proxyConfig.port),
+        proxy_port: String(proxyConfig.port),
         proxy_user: proxyConfig.username,
         proxy_password: proxyConfig.password
       }

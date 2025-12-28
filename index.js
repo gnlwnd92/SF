@@ -3,10 +3,16 @@
 /**
  * AdsPower YouTube Automation - Standalone Version
  * 독립 실행 가능한 통합 CLI
+ *
+ * v2.8: 성능 최적화 - 조건부 로깅
  */
 
+// [v2.8] 조건부 로깅 헬퍼
+const DEBUG_STARTUP = process.env.DEBUG_STARTUP === 'true';
+const debugLog = (...args) => { if (DEBUG_STARTUP) console.log(...args); };
+
 // 즉시 실행 확인
-console.log('[START] Script execution started at', new Date().toISOString());
+debugLog('[START] Script execution started at', new Date().toISOString());
 
 const path = require('path');
 const fs = require('fs');
@@ -27,10 +33,10 @@ terminalLogger.initialize().catch(err => {
   console.error('터미널 로거 초기화 실패:', err.message);
 });
 
-console.log('[INIT] Basic modules loaded');
+debugLog('[INIT] Basic modules loaded');
 
 // 환경 변수 로드
-console.log('[ENV] Checking .env file...');
+debugLog('[ENV] Checking .env file...');
 const envPath = path.join(__dirname, '.env');
 if (!fs.existsSync(envPath)) {
   console.error(chalk.red('❌ .env 파일이 없습니다!'));
@@ -39,9 +45,9 @@ if (!fs.existsSync(envPath)) {
   process.exit(1);
 }
 
-console.log('[ENV] Loading .env file...');
+debugLog('[ENV] Loading .env file...');
 require('dotenv').config({ path: envPath });
-console.log('[ENV] .env loaded successfully');
+debugLog('[ENV] .env loaded successfully');
 
 // 필수 디렉터리 생성
 const requiredDirs = ['credentials', 'logs', 'logs/daily', 'logs/errors', 'logs/sessions', 'logs/workflows', 'screenshots', 'backup', 'temp'];
@@ -67,16 +73,16 @@ if (missingVars.length > 0) {
 }
 
 // CLI 로드
-console.log('[CLI] Loading CLI module...');
+debugLog('[CLI] Loading CLI module...');
 const useImprovedCLI = process.env.USE_IMPROVED_CLI === 'true' || process.argv.includes('--improved');
-console.log('[CLI] Using', useImprovedCLI ? 'ImprovedEnterpriseCLI' : 'EnterpriseCLI');
+debugLog('[CLI] Using', useImprovedCLI ? 'ImprovedEnterpriseCLI' : 'EnterpriseCLI');
 
 let EnterpriseCLI;
 try {
   EnterpriseCLI = useImprovedCLI 
     ? require('./src/presentation/cli/ImprovedEnterpriseCLI')
     : require('./src/presentation/cli/EnterpriseCLI');
-  console.log('[CLI] CLI module loaded successfully');
+  debugLog('[CLI] CLI module loaded successfully');
 } catch (error) {
   console.error('[CLI] Failed to load CLI module:', error.message);
   console.error('[CLI] Stack:', error.stack);
@@ -119,9 +125,9 @@ args.forEach((arg, index) => {
 });
 
 // CLI 인스턴스 생성
-console.log('[CLI] Creating CLI instance...');
+debugLog('[CLI] Creating CLI instance...');
 const cli = new EnterpriseCLI(config);
-console.log('[CLI] CLI instance created');
+debugLog('[CLI] CLI instance created');
 
 // 시작 배너
 function showBanner() {
@@ -233,7 +239,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // 메인 실행
 async function main() {
-  console.log('[MAIN] Starting main function...');
+  debugLog('[MAIN] Starting main function...');
   
   // 터미널 로거 통계 표시 (선택사항)
   if (terminalLogger && process.env.SHOW_LOG_STATS === 'true') {
@@ -247,7 +253,7 @@ async function main() {
   
   showBanner();
   
-  console.log('[MAIN] Checking mode:', mode || 'interactive');
+  debugLog('[MAIN] Checking mode:', mode || 'interactive');
   
   try {
     // 모드가 지정된 경우 직접 실행
@@ -295,8 +301,8 @@ async function main() {
       spinner.succeed('완료!');
     } else {
       // 대화형 모드로 CLI 실행
-      console.log('[MAIN] Starting interactive mode...');
-      console.log('[MAIN] Calling cli.run()...');
+      debugLog('[MAIN] Starting interactive mode...');
+      debugLog('[MAIN] Calling cli.run()...');
       await cli.run();
       // run()이 자체적으로 무한 루프를 돌므로 여기에 도달하지 않음
       // 하지만 혹시나 도달하면 정상 종료
@@ -316,7 +322,7 @@ async function main() {
 
 // 프로그램 시작
 if (require.main === module) {
-  console.log('[LAUNCH] Starting program...');
+  debugLog('[LAUNCH] Starting program...');
   main().catch(error => {
     console.error(chalk.red('치명적 오류:'), error);
     console.error('Stack:', error.stack);

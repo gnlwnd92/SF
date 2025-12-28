@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
+**버전**: v2.10 (2025-12-28)
+
 ## Core Commands
 
 ```bash
@@ -33,6 +35,14 @@ node test-connection.js           # 단일 프로필 연결 테스트
 npm run batch:visual              # 시각적 배치 컨트롤러
 npm run batch:improved:pause      # 개선된 배치 일시정지
 npm run batch:improved:resume     # 개선된 배치 재개
+
+# 백업/복원
+npm run backup:txt                # TXT → Google Sheets 백업
+npm run restore                   # Google Sheets → TXT 복원
+
+# 로그 관리
+npm run logs:stats                # 로그 통계 확인
+npm run logs:cleanup              # 오래된 로그 정리
 ```
 
 ## Critical Implementation Rules
@@ -82,59 +92,28 @@ await new Promise(resolve => setTimeout(resolve, 5000));
 ```
 
 ### 6. 다국어 버튼 텍스트 동기화 (중요)
-`multilanguage.js`에 정의된 버튼 텍스트가 UseCase의 `buttonPriority` 배열에도 포함되어야 함:
-```javascript
-// src/infrastructure/config/multilanguage.js 에 정의된 텍스트가
-// EnhancedPauseSubscriptionUseCase.js의 confirmPauseInPopup() 내
-// buttonPriority 배열에도 추가되어야 팝업 확인이 작동함
-```
+`multilanguage.js`에 정의된 버튼 텍스트가 UseCase의 `buttonPriority` 배열에도 포함되어야 함.
 **실제 사례**: 러시아어 버튼이 `multilanguage.js`에는 있었지만 `buttonPriority` 배열에 없어서 팝업 확인 실패
 
-### 7. 서비스 간 의존성 주입 순서
-`src/container.js`에서 순환 의존성 주의:
-- `config` → `logger` → `adapters` → `repositories` → `services` → `usecases`
-- `asFunction(() => container.resolve('...'))`로 지연 해결 가능
-
-### 8. 버튼 셀렉터 통일 (v2.5)
+### 7. 버튼 셀렉터 통일 (v2.5)
 YouTube가 `<div role="button">`으로 렌더링할 수 있으므로 항상 통일된 셀렉터 사용:
 ```javascript
-// ❌ 일부 버튼 누락 가능
-document.querySelectorAll('button')
-
 // ✅ 모든 버튼 형태 감지
 document.querySelectorAll('button, [role="button"]')
 ```
 
-### 9. Manage 버튼 토글 방지 (v2.6)
-Manage membership 버튼은 **토글** 방식이므로 패널이 이미 열려있으면 클릭 시 닫힘:
+### 8. Manage 버튼 토글 방지 (v2.6)
+Manage membership 버튼은 토글 방식이므로 패널이 이미 열려있으면 클릭 시 닫힘:
 ```javascript
 // checkCurrentStatus()에서 먼저 Resume/Pause 버튼이 보이는지 확인
 const buttonsAlreadyVisible = await this.page.evaluate((langData) => {
-  const buttons = document.querySelectorAll('button, [role="button"]');
-  for (const btn of buttons) {
-    const text = btn.textContent?.trim() || '';
-    const hasPause = langData.buttons.pause?.some(p => text.includes(p));
-    const hasResume = langData.buttons.resume?.some(r => text.includes(r));
-    if (hasPause || hasResume) return { visible: true, buttonText: text };
-  }
-  return { visible: false };
+  // Resume/Pause 버튼 체크 후 보이면 Manage 클릭 스킵
 }, lang);
-
-if (buttonsAlreadyVisible.visible) {
-  // ✅ 이미 버튼이 보이면 Manage 클릭 스킵 (토글 방지)
-} else {
-  // Manage 버튼 클릭
-}
 ```
 
-### 10. checkCurrentStatus() 직접 클릭 방식 (v2.6)
+### 9. checkCurrentStatus() 직접 클릭 방식 (v2.6)
 `EnhancedButtonInteractionService.clickManageMembershipButton()`은 반환값 불일치 문제가 있음:
 ```javascript
-// ❌ EnhancedButtonInteractionService 사용 시 문제
-// 반환: { success, navigated } vs 체크: result.clicked (undefined)
-const clickResult = await enhancedButtonService.clickManageMembershipButton(...);
-if (clickResult.clicked) { ... }  // 항상 undefined!
-
 // ✅ 직접 클릭 방식 사용 (검증된 로직)
 const buttons = await this.page.$$('ytd-button-renderer button, button, [role="button"]');
 for (const btn of buttons) {
@@ -145,7 +124,78 @@ for (const btn of buttons) {
   }
 }
 ```
-**관련 파일**: `EnhancedPauseSubscriptionUseCase.js:1753-1845`, `EnhancedResumeSubscriptionUseCase.js:2094-2134`
+
+### 10. TXT 백업 배치 업로드 (v2.7)
+Google Sheets API 502 오류 방지를 위한 배치 처리:
+```javascript
+// TxtBackupUseCaseFinal.js 설정
+this.config = {
+  batchSize: 50,        // 500 → 50 (API 502 방지)
+  maxRetries: 3,        // 재시도 횟수
+  retryDelay: 2000,     // 재시도 대기 (지수 백오프)
+  batchDelay: 1000      // 배치 간 대기
+};
+```
+
+### 11. 해시 기반 프록시 매핑 (v2.9)
+Google 자동화 탐지 우회를 위한 계정-프록시 1:1 고정 매핑:
+```javascript
+// 동일 계정은 항상 동일한 프록시 사용
+const hashProxyMapper = container.resolve('hashProxyMapper');
+const proxy = await hashProxyMapper.getProxyForAccount(email, 'kr');
+// hash(email) % activeProxyCount → 결정론적 매핑
+
+// 폴백 계층: 해시 매핑 → 시트 랜덤 → 하드코딩 랜덤
+try {
+  const result = await hashProxyMapper.getRandomProxyFromSheet('kr');
+  krProxy = result.proxy;        // gate.decodo.com (24h Sticky)
+  proxyId = result.proxyId;      // 'random_Proxy_kr_15'
+} catch {
+  krProxy = getRandomProxy('kr'); // kr.decodo.com (하드코딩)
+  proxyId = 'hardcoded_random';
+}
+```
+**관련 파일**:
+- `src/services/HashBasedProxyMappingService.js` - 해시 매핑 + `_log()` 로거 호환성
+- `src/infrastructure/repositories/ProxySheetRepository.js` - 프록시 시트 읽기
+- Google Sheets '프록시' 시트 (A-K열: ID, 유형, 호스트, 포트, 사용자명, 비밀번호, 국가, 상태, 연속실패횟수, 마지막사용시간, 최근IP)
+
+### 12. AdsPower 프록시 설정 형식 (v2.9)
+프록시 설정 시 필드 형식 주의:
+```javascript
+// ✅ 올바른 형식
+{
+  proxy_soft: 'other',           // 항상 'other' (커스텀 프록시)
+  proxy_type: 'socks5',          // 프로토콜 타입
+  proxy_host: 'gate.decodo.com',
+  proxy_port: String(port),      // ⚠️ 반드시 문자열
+  proxy_user: 'session-xxx',
+  proxy_password: 'xxx'
+}
+
+// ❌ 잘못된 형식
+{
+  proxy_soft: 'socks5',          // 'other'여야 함
+  proxy_port: 7000,              // 숫자 안됨, String 필수
+}
+```
+
+### 13. 프록시 변경 전 기존 브라우저 종료 (v2.10, 필수!)
+`updateProfile()` API는 프로필 설정만 변경하며, **실행 중인 브라우저에는 적용되지 않음**:
+```javascript
+// ❌ 잘못된 순서 - 기존 브라우저가 이전 프록시로 재사용됨
+await adsPowerAdapter.updateProfile(profileId, { user_proxy_config: krProxy });
+const { browser } = await adsPowerAdapter.openBrowser(profileId);
+// → 이미 실행 중인 브라우저를 재연결하면 새 프록시가 적용되지 않음!
+
+// ✅ 올바른 순서 - 기존 브라우저 종료 후 프록시 설정
+await adsPowerAdapter.closeBrowser(profileId);  // 기존 브라우저 종료
+await delay(2000);                              // 정리 대기
+await adsPowerAdapter.updateProfile(profileId, { user_proxy_config: krProxy });
+const { browser } = await adsPowerAdapter.openBrowser(profileId);  // 새 브라우저
+// → 새 브라우저가 새 프록시로 시작됨
+```
+**증상**: 검은 화면, `ERR_SOCKS_CONNECTION_FAILED`, "Manage membership 버튼 클릭 실패"
 
 ## Architecture
 
@@ -159,9 +209,7 @@ for (const btn of buttons) {
 │     ├─ EnhancedPauseSubscriptionUseCase.js         │
 │     ├─ EnhancedResumeSubscriptionUseCase.js        │
 │     ├─ ScheduledSubscriptionWorkerUseCase.js  # 통합워커 │
-│     ├─ LogCleanupUseCase.js                   # 로그정리 │
-│     ├─ BatchPauseOptimizedUseCase.js               │
-│     └─ FamilyPlanCheckUseCase.js                   │
+│     └─ TxtBackupUseCaseFinal.js               # 백업 │
 ├─────────────────────────────────────────────────────┤
 │  Domain Layer                                       │
 │  └─ src/domain/ (entities/, services/)             │
@@ -169,23 +217,17 @@ for (const btn of buttons) {
 │  Infrastructure Layer                               │
 │  ├─ adapters/                                      │
 │  │   ├─ AdsPowerAdapter.js    ⚠️ getAllProfiles() │
-│  │   └─ BrowserController.js                       │
+│  │   ├─ HumanLikeMouseHelper.js   # 베지어 곡선   │
+│  │   └─ CDPClickHelper.js         # CDP 클릭      │
 │  ├─ repositories/                                  │
 │  │   ├─ EnhancedGoogleSheetsRepository.js         │
-│  │   ├─ PauseSheetRepository.js   # 통합워커 탭   │
-│  │   └─ MockGoogleSheetsRepository.js             │
+│  │   └─ PauseSheetRepository.js   # 통합워커 탭   │
 │  └─ config/                                        │
-│      ├─ multilanguage.js  # 다국어 UI 텍스트      │
-│      └─ languages.js                               │
+│      └─ multilanguage.js  # 다국어 UI 텍스트      │
 ├─────────────────────────────────────────────────────┤
 │  Services (횡단 관심사)                             │
 │  └─ src/services/                                  │
-│      ├─ AuthenticationService.js                   │
 │      ├─ ImprovedAuthenticationService.js  # CDP 클릭 │
-│      ├─ NavigationService.js                       │
-│      ├─ LanguageService.js                         │
-│      ├─ ButtonInteractionService.js                │
-│      ├─ PopupService.js                            │
 │      ├─ EnhancedDateParsingService.js  # 다국어 날짜 │
 │      ├─ WorkerLockService.js      # 분산 잠금     │
 │      └─ TimeFilterService.js      # 시간 필터     │
@@ -201,10 +243,7 @@ for (const btn of buttons) {
 | `src/config/workerDefaults.js` | 통합워커 기본값 (단일 소스) |
 | `src/presentation/cli/EnterpriseCLI.js` | 대화형 CLI 메뉴 |
 | `src/infrastructure/adapters/AdsPowerAdapter.js` | 브라우저 제어 핵심 |
-| `src/infrastructure/adapters/HumanLikeMouseHelper.js` | 베지어 곡선 마우스 이동 |
-| `src/infrastructure/adapters/CDPClickHelper.js` | CDP 네이티브 클릭 |
 | `src/infrastructure/config/multilanguage.js` | 다국어 UI 텍스트 |
-| `src/services/EnhancedDateParsingService.js` | 다국어 날짜 파싱 |
 
 ## Environment Variables (.env)
 
@@ -222,9 +261,9 @@ BATCH_SIZE=5                     # 동시 처리 프로필 수
 NAVIGATION_TIMEOUT=30000         # 30초
 LOGIN_MODE=improved              # improved/legacy/minimal
 
-# 선택사항
+# 디버그
 DEBUG_MODE=false
-ANTI_CAPTCHA_API_KEY=            # 이미지 CAPTCHA 자동 해결
+DEBUG_STARTUP=false              # 시작 시 로그 출력
 ```
 
 ## Development Workflows
@@ -240,17 +279,6 @@ ANTI_CAPTCHA_API_KEY=            # 이미지 CAPTCHA 자동 해결
 3. **UseCase의 buttonPriority 배열에도 추가** (중요!)
 4. `npm run verify:dates` 실행하여 날짜 파싱 검증
 
-### 서비스 의존성 주입 예시
-```javascript
-// src/container.js
-myUseCase: asClass(MyUseCase)
-  .inject(() => ({
-    adsPowerAdapter: container.resolve('adsPowerAdapter'),
-    sheetsRepository: container.resolve('enhancedSheetsRepository'),
-    logger: container.resolve('logger')
-  }))
-```
-
 ## Google Sheets 시트 구조
 
 | 시트명 | 용도 |
@@ -258,19 +286,13 @@ myUseCase: asClass(MyUseCase)
 | `애즈파워현황` | 전체 프로필 목록 (AdsPower ID 매핑) |
 | `일시정지` | 일시정지 대상 |
 | `재개` | 재개 대상 |
-| `통합워커` | 상태 기반 자동 관리 (E열: 상태, I열: 시간, J열: 잠금, L열: 재시도) |
-| `가족요금제` | 가족 요금제 확인 |
-| `백업카드변경` | 결제 수단 변경 |
+| `통합워커` | 상태 기반 자동 관리 (E열: 상태, I열: 시간, J열: 잠금, L열: 재시도, N열: IP, O열: proxyId) |
+| `백업` | TXT 백업 데이터 |
+| `프록시` | 24h Sticky 세션 프록시 (A-K열: ID, 유형, 호스트, 포트, 사용자명, 비밀번호, 국가, 상태, 연속실패횟수, 마지막사용시간, 최근IP) |
 
 ## 통합워커 시스템 (v2.0)
 
 분산 PC에서 동시 작업 시 충돌 방지하는 시간 기반 자동 관리 시스템:
-
-```
-E열 상태: "일시중지" ↔ "결제중"
-J열 잠금: "작업중:WORKER-PC1:14:35" (15분 초과 시 자동 해제)
-L열 재시도: 실패 횟수 공유
-```
 
 **기본값 설정** (`src/config/workerDefaults.js`):
 ```javascript
@@ -279,35 +301,30 @@ L열 재시도: 실패 횟수 공유
   pauseMinutesAfter: 10,      // 일시중지: 결제 후 10분
   checkIntervalSeconds: 60,   // 체크 간격 60초
   maxRetryCount: 3,           // 최대 재시도 3회
-  continuous: true,           // 지속 실행 모드
-  debugMode: true,            // 디버그 모드
   humanLikeMotion: true       // 휴먼라이크 인터랙션
 }
 ```
-
-**관련 파일:**
-- `WorkerLockService.js` - 분산 잠금 관리
-- `TimeFilterService.js` - 결제 시간 기준 필터링
-- `ScheduledSubscriptionWorkerUseCase.js` - 지속 실행 워커
-- `src/config/workerDefaults.js` - 기본값 단일 소스
 
 ## 휴먼라이크 인터랙션 (v2.4)
 
 봇 탐지 우회를 위한 자연스러운 마우스/클릭 동작:
 
-| 모듈 | 파일 위치 | 핵심 기능 |
-|------|-----------|-----------|
-| HumanLikeMouseHelper | `src/infrastructure/adapters/` | 베지어 곡선, 손떨림, 가속/감속 |
-| CDPClickHelper | `src/infrastructure/adapters/` | CDP 네이티브 입력 이벤트 |
-| HumanLikeClickService | `src/services/` | 호버 + 딜레이 클릭 |
-| AdvancedClickHelper | `src/infrastructure/adapters/` | 다중 클릭 전략 |
+| 모듈 | 핵심 기능 |
+|------|-----------|
+| HumanLikeMouseHelper | 베지어 곡선, 손떨림, 가속/감속 |
+| CDPClickHelper | CDP 네이티브 입력 이벤트 |
 
-**활성화 방법**: `humanLikeMotion: true` (기본값)
+**활성화**: `humanLikeMotion: true` (기본값)
 
-**적용 서비스**:
-- `ImprovedAuthenticationService` - 로그인 화면 마우스 이동
-- `ButtonInteractionService` - 버튼 클릭
-- `EnhancedButtonInteractionService` - 팝업 확인 버튼
+## 성능 최적화
+
+### 초기화 지연 원인 (v2.8)
+새 환경에서 `npm start`가 느린 경우:
+1. **Cold Module Cache**: 80+ 모듈 순차 로딩 (3-5초)
+2. **Google Sheets OAuth**: 서비스 계정 인증 (1-3초)
+3. **AdsPower API 체크**: HTTP 연결 확인 (0.5-1초)
+
+**해결 방안**: `docs/plans/2025-12-28-startup-performance-design.md` 참조
 
 ## Troubleshooting
 
@@ -324,9 +341,10 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 ```
 재시도 시 반드시 `closeBrowser()` 호출 (v2.3)
 
-### Google Sheets 권한 오류
-1. `credentials/service-account.json` 존재 확인
-2. Service Account 이메일이 Sheets에 편집자로 추가되었는지 확인
+### Google Sheets 502 오류 (TXT 백업)
+- 배치 크기: 50 이하 유지
+- 재시도 로직 필수
+- `TxtBackupUseCaseFinal.js` 설정 확인
 
 ### 팝업 확인 실패 (다국어)
 1. `multilanguage.js`에 버튼 텍스트 정의 확인
@@ -335,18 +353,15 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 ## 지원 언어
 
 **날짜 파싱**: ko, en, ja, zh, vi, th, id, ms, pt, es, de, fr, ru, tr, it (15개)
-**UI 버튼**: multilanguage.js 참조 (언어별 상이)
 
 ## 로그 위치
 
-| 디렉토리 | 용도 | 권장 보존 |
-|----------|------|-----------|
-| `logs/terminal/` | 터미널 로그 (JSON) | 48시간 |
-| `logs/sessions/` | 세션 로그 | 48시간 |
-| `logs/errors/` | 에러 로그 | 7일 |
-| `screenshots/debug/` | 디버그 스크린샷 | 24시간 |
-
-CLI에서 `🧹 로그/스크린샷 정리` 메뉴로 정리 가능
+| 디렉토리 | 용도 |
+|----------|------|
+| `logs/terminal/` | 터미널 로그 (JSON, 48시간) |
+| `logs/sessions/` | 세션 로그 |
+| `logs/errors/` | 에러 로그 |
+| `screenshots/debug/` | 디버그 스크린샷 |
 
 ## 코드 수정 시 체크리스트
 
@@ -356,7 +371,10 @@ CLI에서 `🧹 로그/스크린샷 정리` 메뉴로 정리 가능
 4. **다국어 텍스트 추가시**: `multilanguage.js` + UseCase buttonPriority + `verify:dates`
 5. **환경변수 추가시**: `.env.example` 동기화
 6. **기본값 변경시**: `src/config/workerDefaults.js` 수정 (단일 소스)
-7. **휴먼라이크 옵션**: `humanLikeMotion` 기본값 true (봇 탐지 우회)
-8. **버튼 탐색시**: `button, [role="button"]` 셀렉터 사용 (통일)
-9. **Manage 버튼 클릭시**: Resume/Pause 버튼 선행 체크 (토글 방지)
-10. **checkCurrentStatus 수정시**: 직접 클릭 방식 사용 (EnhancedButtonInteractionService 사용 금지)
+7. **버튼 탐색시**: `button, [role="button"]` 셀렉터 사용 (통일)
+8. **Manage 버튼 클릭시**: Resume/Pause 버튼 선행 체크 (토글 방지)
+9. **checkCurrentStatus 수정시**: 직접 클릭 방식 사용
+10. **TXT 백업 수정시**: 배치 크기 50 이하 + 재시도 로직 필수
+11. **프록시 설정시**: `proxy_port: String(port)`, `proxy_soft: 'other'` 필수
+12. **로거 사용시**: 옵셔널 메서드는 `_log()` 헬퍼 패턴 사용 (debug/warn 없을 수 있음)
+13. **프록시 변경시**: 반드시 `closeBrowser()` 후 `updateProfile()` → `openBrowser()` 순서

@@ -11,7 +11,11 @@ const UniversalDateExtractor = require('./UniversalDateExtractor');
 class EnhancedDateParsingService {
   constructor(logger = console) {
     this.logger = logger;
-    
+
+    // [v2.12] 디버그 모드 플래그 - 환경변수로 제어
+    // DEBUG_DATE_PARSING=true 로 설정하면 상세 로그 출력
+    this.debugEnabled = process.env.DEBUG_DATE_PARSING === 'true';
+
     // UniversalDateExtractor 초기화
     this.universalExtractor = new UniversalDateExtractor({ logger });
     
@@ -190,60 +194,82 @@ class EnhancedDateParsingService {
    * @param {string} context - 컨텍스트 ('재개', '일시정지', 'resume', 'pause', 'nextBilling')
    */
   parseDate(rawText, language = 'en', context = 'pause') {
-    console.log(chalk.cyan('\n📅 ==================== 날짜 파싱 시작 ===================='));
-    console.log(chalk.yellow('🔍 원본 텍스트:'), rawText);
-    console.log(chalk.yellow('🌐 언어:'), language);
-    console.log(chalk.yellow('📌 컨텍스트:'), context);
+    // [v2.12] 상세 디버그 로그는 환경변수로 제어
+    if (this.debugEnabled) {
+      console.log(chalk.cyan('\n📅 ==================== 날짜 파싱 시작 ===================='));
+      console.log(chalk.yellow('🔍 원본 텍스트:'), rawText);
+      console.log(chalk.yellow('🌐 언어:'), language);
+      console.log(chalk.yellow('📌 컨텍스트:'), context);
+    }
 
     if (!rawText) {
-      console.log(chalk.red('❌ 입력 텍스트가 없음'));
-      console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+      if (this.debugEnabled) {
+        console.log(chalk.red('❌ 입력 텍스트가 없음'));
+        console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+      }
       return null;
     }
-    
+
     // 텍스트 정리
     const cleanText = rawText.toString().trim();
-    console.log(chalk.gray('🧹 정리된 텍스트:'), cleanText);
-    
+    if (this.debugEnabled) {
+      console.log(chalk.gray('🧹 정리된 텍스트:'), cleanText);
+    }
+
     // 날짜가 아닌 텍스트 필터링
     if (this.isNotDateText(cleanText, language)) {
-      console.log(chalk.yellow('⚠️ 날짜가 아닌 텍스트로 판단:'), cleanText);
-      console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+      if (this.debugEnabled) {
+        console.log(chalk.yellow('⚠️ 날짜가 아닌 텍스트로 판단:'), cleanText);
+        console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+      }
       return null;
     }
-    
+
     // 각 패턴 시도
     for (const pattern of this.datePatterns) {
-      console.log(chalk.blue(`\n🔄 패턴 시도: ${pattern.type}`));
-      console.log(chalk.gray('   정규식:'), pattern.regex.toString());
-      
+      if (this.debugEnabled) {
+        console.log(chalk.blue(`\n🔄 패턴 시도: ${pattern.type}`));
+        console.log(chalk.gray('   정규식:'), pattern.regex.toString());
+      }
+
       const match = cleanText.match(pattern.regex);
       if (match) {
-        console.log(chalk.green('✅ 패턴 매칭 성공!'));
-        console.log(chalk.gray('   매칭된 부분:'), match[0]);
-        console.log(chalk.gray('   매칭 그룹:'), match.slice(1));
-        
+        if (this.debugEnabled) {
+          console.log(chalk.green('✅ 패턴 매칭 성공!'));
+          console.log(chalk.gray('   매칭된 부분:'), match[0]);
+          console.log(chalk.gray('   매칭 그룹:'), match.slice(1));
+        }
+
         const parsed = this.extractDateFromMatch(match, pattern.type, language, context);
         if (parsed) {
-          console.log(chalk.green('✅ 날짜 파싱 성공:'), parsed);
-          console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+          // 성공 결과는 항상 출력 (간결하게)
+          if (this.debugEnabled) {
+            console.log(chalk.green('✅ 날짜 파싱 성공:'), parsed);
+            console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+          }
           return parsed;
         } else {
-          console.log(chalk.red('❌ 날짜 추출 실패'));
+          if (this.debugEnabled) {
+            console.log(chalk.red('❌ 날짜 추출 실패'));
+          }
         }
       } else {
-        console.log(chalk.gray('   매칭 실패'));
+        if (this.debugEnabled) {
+          console.log(chalk.gray('   매칭 실패'));
+        }
       }
     }
-    
-    // 모든 패턴 실패
-    console.log(chalk.red('\n❌ 모든 패턴 매칭 실패'));
-    console.log(chalk.yellow('💡 디버깅 힌트:'));
-    console.log('   1. 원본 텍스트에 날짜가 포함되어 있는지 확인');
-    console.log('   2. 언어 설정이 올바른지 확인');
-    console.log('   3. 새로운 날짜 형식이면 패턴 추가 필요');
-    console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
-    
+
+    // 모든 패턴 실패 - 경고는 항상 출력
+    console.log(chalk.yellow(`⚠️ 날짜 파싱 실패: "${cleanText.substring(0, 30)}..."`));
+    if (this.debugEnabled) {
+      console.log(chalk.yellow('💡 디버깅 힌트:'));
+      console.log('   1. 원본 텍스트에 날짜가 포함되어 있는지 확인');
+      console.log('   2. 언어 설정이 올바른지 확인');
+      console.log('   3. 새로운 날짜 형식이면 패턴 추가 필요');
+      console.log(chalk.cyan('📅 ==================== 날짜 파싱 종료 ====================\n'));
+    }
+
     return null;
   }
 
@@ -251,10 +277,12 @@ class EnhancedDateParsingService {
    * 매칭된 결과에서 날짜 추출
    */
   extractDateFromMatch(match, patternType, language, context = 'pause') {
-    console.log(chalk.blue('📍 날짜 추출 시작'));
-    console.log(chalk.gray('   패턴 타입:'), patternType);
-    console.log(chalk.gray('   언어:'), language);
-    console.log(chalk.gray('   컨텍스트:'), context);
+    if (this.debugEnabled) {
+      console.log(chalk.blue('📍 날짜 추출 시작'));
+      console.log(chalk.gray('   패턴 타입:'), patternType);
+      console.log(chalk.gray('   언어:'), language);
+      console.log(chalk.gray('   컨텍스트:'), context);
+    }
     
     let year, month, day;
     
@@ -265,7 +293,7 @@ class EnhancedDateParsingService {
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
-          console.log(chalk.gray(`   ISO 형식: 년=${year}, 월=${month}, 일=${day}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   ISO 형식: 년=${year}, 월=${month}, 일=${day}`));
           break;
           
         case 'KoreanDot':
@@ -273,7 +301,7 @@ class EnhancedDateParsingService {
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
-          console.log(chalk.gray(`   한국 점 형식: 년=${year}, 월=${month}, 일=${day}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   한국 점 형식: 년=${year}, 월=${month}, 일=${day}`));
           break;
           
         case 'Korean':
@@ -281,7 +309,7 @@ class EnhancedDateParsingService {
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
-          console.log(chalk.gray(`   한국 형식: 년=${year}, 월=${month}, 일=${day}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   한국 형식: 년=${year}, 월=${month}, 일=${day}`));
           break;
           
         case 'YearSlash':
@@ -289,7 +317,7 @@ class EnhancedDateParsingService {
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
-          console.log(chalk.gray(`   연도 슬래시 형식: 년=${year}, 월=${month}, 일=${day}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   연도 슬래시 형식: 년=${year}, 월=${month}, 일=${day}`));
           break;
           
         case 'US':
@@ -297,7 +325,7 @@ class EnhancedDateParsingService {
           month = this.parseMonth(match[1], language);
           day = parseInt(match[2]);
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   미국 형식: 월명="${match[1]}"→${month}, 일=${day}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   미국 형식: 월명="${match[1]}"→${month}, 일=${day}, 년=${year}`));
           break;
           
         case 'Spanish':
@@ -305,7 +333,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], language === 'es' ? language : 'es');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   스페인어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   스페인어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'PortugueseShort':
@@ -314,7 +342,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = parseInt(match[2]);
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   포르투갈어 짧은 형식: 일=${day}, 월=${month}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   포르투갈어 짧은 형식: 일=${day}, 월=${month}, 년=${year} (자동 추론)`));
           break;
           
         case 'RussianFull':
@@ -322,7 +350,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'ru');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   러시아어 전체 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   러시아어 전체 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'RussianShort':
@@ -330,7 +358,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'ru');
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   러시아어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   러시아어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
           
         case 'Russian':
@@ -338,7 +366,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], language === 'ru' ? language : 'ru');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   러시아어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   러시아어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'EU':
@@ -347,7 +375,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], language);
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   유럽/터키 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   유럽/터키 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'TurkishShort':
@@ -355,7 +383,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], language);
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   터키 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   터키 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
           
         case 'FrenchShort':
@@ -363,7 +391,7 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'fr');
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   프랑스어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   프랑스어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
           
         case 'French':
@@ -371,52 +399,55 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'fr');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   프랑스어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   프랑스어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'GermanShort':
           // DD. Month.
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'de');
-          year = this.calculateYearWithContext(month, day, context);          console.log(chalk.gray(`   독일어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          year = this.calculateYearWithContext(month, day, context);
+          if (this.debugEnabled) console.log(chalk.gray(`   독일어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
-          
+
         case 'German':
           // DD. Month YYYY
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'de');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   독일어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   독일어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'ItalianShort':
           // DD Month
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'it');
-          year = this.calculateYearWithContext(month, day, context);          console.log(chalk.gray(`   이탈리아어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          year = this.calculateYearWithContext(month, day, context);
+          if (this.debugEnabled) console.log(chalk.gray(`   이탈리아어 짧은 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
-          
+
         case 'Italian':
           // DD Month YYYY
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'it');
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   이탈리아어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   이탈리아어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year}`));
           break;
           
         case 'JapaneseShort':
           // MM月DD日
           month = parseInt(match[1]);
           day = parseInt(match[2]);
-          year = this.calculateYearWithContext(month, day, context);          console.log(chalk.gray(`   일본어 짧은 형식: 월=${month}, 일=${day}, 년=${year} (자동 추론)`));
+          year = this.calculateYearWithContext(month, day, context);
+          if (this.debugEnabled) console.log(chalk.gray(`   일본어 짧은 형식: 월=${month}, 일=${day}, 년=${year} (자동 추론)`));
           break;
-          
+
         case 'Japanese':
           // YYYY年MM월DD일
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
-          console.log(chalk.gray(`   일본어 형식: 년=${year}, 월=${month}, 일=${day}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   일본어 형식: 년=${year}, 월=${month}, 일=${day}`));
           break;
           
         case 'Vietnamese':
@@ -424,21 +455,23 @@ class EnhancedDateParsingService {
           day = parseInt(match[1]);
           month = parseInt(match[2]);
           year = match[3] ? parseInt(match[3]) : this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   베트남어 형식: 일=${day}, 월=${month}, 년=${year}${!match[3] ? ' (자동 추론)' : ''}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   베트남어 형식: 일=${day}, 월=${month}, 년=${year}${!match[3] ? ' (자동 추론)' : ''}`));
           break;
-          
+
         case 'Arabic':
           // DD Month
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'ar');
-          year = this.calculateYearWithContext(month, day, context);          console.log(chalk.gray(`   아랍어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          year = this.calculateYearWithContext(month, day, context);
+          if (this.debugEnabled) console.log(chalk.gray(`   아랍어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
-          
+
         case 'Hindi':
           // DD Month
           day = parseInt(match[1]);
           month = this.parseMonth(match[2], 'hi');
-          year = this.calculateYearWithContext(month, day, context);          console.log(chalk.gray(`   힌디어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
+          year = this.calculateYearWithContext(month, day, context);
+          if (this.debugEnabled) console.log(chalk.gray(`   힌디어 형식: 일=${day}, 월명="${match[2]}"→${month}, 년=${year} (자동 추론)`));
           break;
           
         case 'USShort':
@@ -446,15 +479,15 @@ class EnhancedDateParsingService {
           month = this.parseMonth(match[1], language);
           day = parseInt(match[2]);
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   미국 짧은 형식: 월명="${match[1]}"→${month}, 일=${day}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   미국 짧은 형식: 월명="${match[1]}"→${month}, 일=${day}, 년=${year} (자동 추론)`));
           break;
-          
+
         case 'KoreanShort':
           // MM월 DD일 (연도 없음)
           month = parseInt(match[1]);
           day = parseInt(match[2]);
           year = this.calculateYearWithContext(month, day, context);
-          console.log(chalk.gray(`   한국 짧은 형식: 월=${month}, 일=${day}, 년=${year} (자동 추론)`));
+          if (this.debugEnabled) console.log(chalk.gray(`   한국 짧은 형식: 월=${month}, 일=${day}, 년=${year} (자동 추론)`));
           break;
           
         case 'Slash':
@@ -464,45 +497,45 @@ class EnhancedDateParsingService {
             // 미국식: MM/DD/YYYY
             month = parseInt(match[1]);
             day = parseInt(match[2]);
-            console.log(chalk.gray(`   미국식 슬래시 형식 (MM/DD/YYYY)`));
+            if (this.debugEnabled) console.log(chalk.gray(`   미국식 슬래시 형식 (MM/DD/YYYY)`));
           } else {
             // 유럽/남미식: DD/MM/YYYY (포르투갈어, 스페인어 등)
             day = parseInt(match[1]);
             month = parseInt(match[2]);
-            console.log(chalk.gray(`   유럽/남미식 슬래시 형식 (DD/MM/YYYY)`));
+            if (this.debugEnabled) console.log(chalk.gray(`   유럽/남미식 슬래시 형식 (DD/MM/YYYY)`));
           }
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   슬래시 형식: 일=${day}, 월=${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   슬래시 형식: 일=${day}, 월=${month}, 년=${year}`));
           break;
-          
+
         case 'Dot':
         case 'Hyphen':
           // DD.MM.YYYY 또는 DD-MM-YYYY
           day = parseInt(match[1]);
           month = parseInt(match[2]);
           year = parseInt(match[3]);
-          console.log(chalk.gray(`   점/하이픈 형식: 일=${day}, 월=${month}, 년=${year}`));
+          if (this.debugEnabled) console.log(chalk.gray(`   점/하이픈 형식: 일=${day}, 월=${month}, 년=${year}`));
           break;
-          
+
         default:
-          console.log(chalk.red('   알 수 없는 패턴 타입:', patternType));
+          if (this.debugEnabled) console.log(chalk.red('   알 수 없는 패턴 타입:', patternType));
           return null;
       }
-      
+
       // 유효성 검증
       if (!this.isValidDate(year, month, day)) {
-        console.log(chalk.red(`   ❌ 유효하지 않은 날짜: ${year}-${month}-${day}`));
+        if (this.debugEnabled) console.log(chalk.red(`   ❌ 유효하지 않은 날짜: ${year}-${month}-${day}`));
         return null;
       }
-      
+
       // 표준 형식으로 변환
       const formatted = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      console.log(chalk.green(`   ✅ 포맷팅 완료: ${formatted}`));
-      
+      if (this.debugEnabled) console.log(chalk.green(`   ✅ 포맷팅 완료: ${formatted}`));
+
       return formatted;
-      
+
     } catch (error) {
-      console.log(chalk.red('   ❌ 날짜 추출 오류:'), error.message);
+      if (this.debugEnabled) console.log(chalk.red('   ❌ 날짜 추출 오류:'), error.message);
       return null;
     }
   }
@@ -511,43 +544,43 @@ class EnhancedDateParsingService {
    * 월 이름을 숫자로 변환
    */
   parseMonth(monthText, language = 'en') {
-    console.log(chalk.blue('   📅 월 파싱:'), monthText, `(언어: ${language})`);
-    
+    if (this.debugEnabled) console.log(chalk.blue('   📅 월 파싱:'), monthText, `(언어: ${language})`);
+
     if (!monthText) {
-      console.log(chalk.red('      ❌ 월 텍스트가 없음'));
+      if (this.debugEnabled) console.log(chalk.red('      ❌ 월 텍스트가 없음'));
       return null;
     }
-    
+
     // 숫자인 경우
     if (/^\d+$/.test(monthText)) {
       const month = parseInt(monthText);
-      console.log(chalk.gray(`      숫자 월: ${month}`));
+      if (this.debugEnabled) console.log(chalk.gray(`      숫자 월: ${month}`));
       return month;
     }
-    
+
     // 언어별 매핑 시도
     const langMap = this.monthMappings[language] || this.monthMappings.en;
-    
+
     // 대소문자 무시하고 찾기
     for (const [name, value] of Object.entries(langMap)) {
       if (monthText.toLowerCase() === name.toLowerCase()) {
-        console.log(chalk.green(`      ✅ 월 이름 매칭: "${monthText}" → ${value}`));
+        if (this.debugEnabled) console.log(chalk.green(`      ✅ 월 이름 매칭: "${monthText}" → ${value}`));
         return value;
       }
     }
-    
+
     // 모든 언어에서 찾기
-    console.log(chalk.yellow('      ⚠️ 현재 언어에서 못 찾음, 모든 언어 검색'));
+    if (this.debugEnabled) console.log(chalk.yellow('      ⚠️ 현재 언어에서 못 찾음, 모든 언어 검색'));
     for (const [lang, mapping] of Object.entries(this.monthMappings)) {
       for (const [name, value] of Object.entries(mapping)) {
         if (monthText.toLowerCase() === name.toLowerCase()) {
-          console.log(chalk.green(`      ✅ ${lang} 언어에서 발견: "${monthText}" → ${value}`));
+          if (this.debugEnabled) console.log(chalk.green(`      ✅ ${lang} 언어에서 발견: "${monthText}" → ${value}`));
           return value;
         }
       }
     }
-    
-    console.log(chalk.red(`      ❌ 월 이름을 찾을 수 없음: "${monthText}"`));
+
+    if (this.debugEnabled) console.log(chalk.red(`      ❌ 월 이름을 찾을 수 없음: "${monthText}"`));
     return null;
   }
 
@@ -571,7 +604,7 @@ class EnhancedDateParsingService {
     
     for (const pattern of patterns) {
       if (lowerText.includes(pattern)) {
-        console.log(chalk.yellow(`   날짜 아님 패턴 감지: "${pattern}"`));
+        if (this.debugEnabled) console.log(chalk.yellow(`   날짜 아님 패턴 감지: "${pattern}"`));
         return true;
       }
     }
@@ -583,38 +616,38 @@ class EnhancedDateParsingService {
    * 날짜 유효성 검증
    */
   isValidDate(year, month, day) {
-    console.log(chalk.blue(`   📊 날짜 유효성 검증: ${year}-${month}-${day}`));
-    
+    if (this.debugEnabled) console.log(chalk.blue(`   📊 날짜 유효성 검증: ${year}-${month}-${day}`));
+
     // 기본 범위 체크
     if (!year || year < 2020 || year > 2100) {
-      console.log(chalk.red(`      ❌ 연도 범위 오류: ${year}`));
+      if (this.debugEnabled) console.log(chalk.red(`      ❌ 연도 범위 오류: ${year}`));
       return false;
     }
-    
+
     if (!month || month < 1 || month > 12) {
-      console.log(chalk.red(`      ❌ 월 범위 오류: ${month}`));
+      if (this.debugEnabled) console.log(chalk.red(`      ❌ 월 범위 오류: ${month}`));
       return false;
     }
-    
+
     if (!day || day < 1 || day > 31) {
-      console.log(chalk.red(`      ❌ 일 범위 오류: ${day}`));
+      if (this.debugEnabled) console.log(chalk.red(`      ❌ 일 범위 오류: ${day}`));
       return false;
     }
-    
+
     // 월별 일수 체크
     const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    
+
     // 윤년 체크
     if (month === 2 && this.isLeapYear(year)) {
       daysInMonth[1] = 29;
     }
-    
+
     if (day > daysInMonth[month - 1]) {
-      console.log(chalk.red(`      ❌ ${month}월은 ${daysInMonth[month - 1]}일까지만 있음`));
+      if (this.debugEnabled) console.log(chalk.red(`      ❌ ${month}월은 ${daysInMonth[month - 1]}일까지만 있음`));
       return false;
     }
-    
-    console.log(chalk.green('      ✅ 유효한 날짜'));
+
+    if (this.debugEnabled) console.log(chalk.green('      ✅ 유효한 날짜'));
     return true;
   }
 
@@ -653,30 +686,30 @@ class EnhancedDateParsingService {
 
       // 케이스 1: 오늘과 같은 날짜 -> 올해
       if (inputDate === todayDate) {
-        console.log(chalk.gray(`      → ✅ [재개] 오늘 날짜 (${month}/${day}) -> ${currentYear}년`));
+        if (this.debugEnabled) console.log(chalk.gray(`      → ✅ [재개] 오늘 날짜 (${month}/${day}) -> ${currentYear}년`));
         return currentYear;
       }
 
       // 케이스 2: 오늘보다 이전 날짜 -> 내년
       if (inputDate < todayDate) {
-        console.log(chalk.gray(`      → 📅 [재개] 과거 날짜 (${month}/${day} < ${currentMonth}/${currentDay}) -> ${currentYear + 1}년`));
+        if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [재개] 과거 날짜 (${month}/${day} < ${currentMonth}/${currentDay}) -> ${currentYear + 1}년`));
         return currentYear + 1;
       }
 
       // 케이스 3: 오늘보다 이후 날짜 -> 올해
-      console.log(chalk.gray(`      → 📅 [재개] 미래 날짜 (${month}/${day} > ${currentMonth}/${currentDay}) -> ${currentYear}년`));
+      if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [재개] 미래 날짜 (${month}/${day} > ${currentMonth}/${currentDay}) -> ${currentYear}년`));
       return currentYear;
     } else {
       // 일시정지 컨텍스트: 기존 로직 (오늘 날짜는 내년으로)
 
       // 과거 또는 오늘 날짜 -> 내년
       if (inputDate <= todayDate) {
-        console.log(chalk.gray(`      → 📅 [일시정지] 과거/오늘 날짜 (${month}/${day}) -> ${currentYear + 1}년`));
+        if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [일시정지] 과거/오늘 날짜 (${month}/${day}) -> ${currentYear + 1}년`));
         return currentYear + 1;
       }
 
       // 미래 날짜 -> 올해
-      console.log(chalk.gray(`      → 📅 [일시정지] 미래 날짜 (${month}/${day}) -> ${currentYear}년`));
+      if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [일시정지] 미래 날짜 (${month}/${day}) -> ${currentYear}년`));
       return currentYear;
     }
   }
@@ -695,12 +728,12 @@ class EnhancedDateParsingService {
     // context 기본값 설정
     if (!context) context = 'pause';
 
-    console.log(chalk.blue(`🌍 범용 날짜 추출 시작 (언어: ${langCode || 'auto'}, 원본 컨텍스트: ${context})`));
+    if (this.debugEnabled) console.log(chalk.blue(`🌍 범용 날짜 추출 시작 (언어: ${langCode || 'auto'}, 원본 컨텍스트: ${context})`));
 
     try {
       // UniversalDateExtractor가 없는 경우 fallback
       if (!this.universalExtractor) {
-        console.log(chalk.yellow('⚠️ UniversalDateExtractor 사용 불가 - 대체 파싱 시도'));
+        if (this.debugEnabled) console.log(chalk.yellow('⚠️ UniversalDateExtractor 사용 불가 - 대체 파싱 시도'));
 
         // 간단한 날짜 패턴 매칭으로 fallback
         const datePatterns = [
@@ -718,7 +751,7 @@ class EnhancedDateParsingService {
         }
 
         if (dates.length > 0) {
-          console.log(chalk.green(`✅ Fallback 파싱으로 ${dates.length}개 날짜 발견: ${dates.join(', ')}`));
+          if (this.debugEnabled) console.log(chalk.green(`✅ Fallback 파싱으로 ${dates.length}개 날짜 발견: ${dates.join(', ')}`));
         }
         return dates;
       }
@@ -728,24 +761,26 @@ class EnhancedDateParsingService {
         ? 'resume'
         : 'pause';
 
-      console.log(chalk.cyan(`📌 정규화된 컨텍스트: ${normalizedContext} (원본: ${context})`));
+      if (this.debugEnabled) console.log(chalk.cyan(`📌 정규화된 컨텍스트: ${normalizedContext} (원본: ${context})`));
 
       // UniversalDateExtractor 사용 - ✅ context 전달!
       const dates = this.universalExtractor.extractDates(text, { context: normalizedContext });
 
       if (dates.length > 0) {
-        console.log(chalk.green(`✅ ${dates.length}개 날짜 추출 성공`));
-        // 각 날짜 객체의 상세 정보 로깅
-        dates.forEach((dateObj, idx) => {
-          console.log(chalk.gray(`  [${idx}] Year: ${dateObj.year}, Month: ${dateObj.month}, Day: ${dateObj.day}, Type: ${dateObj.type}, Original: "${dateObj.original}", Confidence: ${dateObj.confidence}`));
-        });
+        if (this.debugEnabled) {
+          console.log(chalk.green(`✅ ${dates.length}개 날짜 추출 성공`));
+          // 각 날짜 객체의 상세 정보 로깅
+          dates.forEach((dateObj, idx) => {
+            console.log(chalk.gray(`  [${idx}] Year: ${dateObj.year}, Month: ${dateObj.month}, Day: ${dateObj.day}, Type: ${dateObj.type}, Original: "${dateObj.original}", Confidence: ${dateObj.confidence}`));
+          });
+        }
       } else {
-        console.log(chalk.yellow('⚠️ 추출된 날짜 없음'));
+        if (this.debugEnabled) console.log(chalk.yellow('⚠️ 추출된 날짜 없음'));
       }
 
       return dates;
     } catch (error) {
-      console.log(chalk.red(`❌ 날짜 추출 오류: ${error.message}`));
+      if (this.debugEnabled) console.log(chalk.red(`❌ 날짜 추출 오류: ${error.message}`));
       return [];
     }
   }
