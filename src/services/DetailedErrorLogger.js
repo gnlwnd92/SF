@@ -228,8 +228,8 @@ class DetailedErrorLogger {
       console.log(chalk.gray(error.stack));
     }
     
-    // 에러 로그 파일 저장
-    const errorLogPath = path.join(process.cwd(), 'logs', 'errors', `${errorId}.json`);
+    // 에러 로그 파일 저장 (error-screenshots 폴더에 통합)
+    const errorLogPath = path.join(this.screenshotDir, `${errorId}.json`);
     await fs.mkdir(path.dirname(errorLogPath), { recursive: true });
     await fs.writeFile(errorLogPath, JSON.stringify(errorInfo, null, 2), 'utf8');
     

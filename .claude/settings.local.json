@@ -44,7 +44,10 @@
       "Bash(ls:*)",
       "Bash(xargs ls:*)",
       "Bash(du:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "mcp__filesystem__read_multiple_files",
+      "mcp__filesystem__list_directory",
+      "mcp__filesystem__list_directory_with_sizes"
     ]
   }
 }

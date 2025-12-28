@@ -18,7 +18,7 @@ class LogCleanupUseCase {
     this.logger = logger || console;
     this.baseDir = process.cwd();
 
-    // 정리 대상 디렉토리 및 권장 보존 기간 (시간 단위)
+    // 정리 대상 디렉토리 및 보존 기간 (48시간 통일)
     this.cleanupTargets = [
       {
         path: 'logs/terminal',
@@ -33,29 +33,35 @@ class LogCleanupUseCase {
         extensions: ['.log']
       },
       {
-        path: 'logs/errors',
-        description: '에러 로그',
-        recommendedHours: 168, // 7일
-        extensions: ['.json', '.log']
-      },
-      {
         path: 'logs/screenshots',
         description: '결과 스크린샷',
-        recommendedHours: 168, // 7일
-        extensions: ['.png', '.jpg', '.jpeg']
+        recommendedHours: 48,
+        extensions: ['.png', '.jpg', '.jpeg', '.txt', '.json']
+      },
+      {
+        path: 'logs/error-screenshots',
+        description: '에러 스크린샷 및 로그',
+        recommendedHours: 48,
+        extensions: ['.png', '.jpg', '.jpeg', '.json']
+      },
+      {
+        path: 'logs/html-snapshots',
+        description: 'HTML 스냅샷',
+        recommendedHours: 48,
+        extensions: ['.html']
       },
       {
         path: 'screenshots/debug',
         description: '디버그 스크린샷',
-        recommendedHours: 24,
+        recommendedHours: 48,
         extensions: ['.png', '.jpg', '.jpeg']
       },
       {
         path: 'screenshots',
         description: '임시 스크린샷 (루트)',
-        recommendedHours: 24,
+        recommendedHours: 48,
         extensions: ['.png', '.jpg', '.jpeg'],
-        excludeSubdirs: true // 하위 디렉토리 제외 (debug 폴더는 별도 처리)
+        excludeSubdirs: true
       }
     ];
   }
