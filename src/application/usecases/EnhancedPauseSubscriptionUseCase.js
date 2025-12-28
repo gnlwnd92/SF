@@ -34,7 +34,8 @@ class EnhancedPauseSubscriptionUseCase {
     dateParser,  // 날짜 파싱 서비스 추가
     buttonService,  // ButtonInteractionService 추가
     mappingService,  // ProfileMappingService 추가
-    hashProxyMapper  // 해시 기반 프록시 매핑 서비스 추가
+    hashProxyMapper,  // 해시 기반 프록시 매핑 서비스 추가
+    sessionLogService  // 세션 로그 서비스 추가 (스크린샷 + 로그 통합)
   }) {
     // config를 먼저 저장 (다른 초기화에서 사용하기 위해)
     this.config = config || {};
@@ -50,6 +51,7 @@ class EnhancedPauseSubscriptionUseCase {
     this.buttonService = buttonService;  // ButtonInteractionService 저장
     this.mappingService = mappingService;  // ProfileMappingService 저장
     this.hashProxyMapper = hashProxyMapper;  // 해시 기반 프록시 매핑 서비스 저장
+    this.sessionLogService = sessionLogService;  // 세션 로그 서비스 저장
     this.page = null; // 페이지 참조 저장용
     this.currentLanguage = 'en';
     this.pauseInfo = {};
@@ -138,7 +140,13 @@ class EnhancedPauseSubscriptionUseCase {
       const email = this.profileData?.email || this.profileData?.googleId;
       this.sessionLogger.startProfile(profileId, email);
     }
-    
+
+    // SessionLogService 세션 시작 (스크린샷 + 로그 통합 관리)
+    const sessionEmail = this.profileData?.email || this.profileData?.googleId || 'unknown';
+    if (this.sessionLogService) {
+      this.sessionLogService.startSession(sessionEmail, 'pause', { profileId });
+    }
+
     const result = {
       profileId,
       email: this.profileData?.email || this.profileData?.googleId,
@@ -626,7 +634,19 @@ class EnhancedPauseSubscriptionUseCase {
     if (this.sessionLogger) {
       this.sessionLogger.endProfile(profileId, result);
     }
-    
+
+    // SessionLogService 세션 종료 (스크린샷 + 로그 통합 관리)
+    if (this.sessionLogService?.hasActiveSession()) {
+      const sessionResult = result.success ? 'success' : 'error';
+      this.sessionLogService.endSession(sessionResult, {
+        nextBillingDate: result.nextBillingDate,
+        error: result.error,
+        errorType: result.errorType || (result.status === 'subscription_expired' ? 'expired' : 'unknown'),
+        errorStep: result.status,
+        language: this.currentLanguage
+      });
+    }
+
     // DetailedErrorLogger 리포트 생성 (성공/실패 모두)
     if (this.detailedErrorLogger) {
       const report = this.detailedErrorLogger.generateErrorReport();
@@ -3472,48 +3492,45 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 스크린샷 캡처
+   * SessionLogService가 있으면 새 폴더 구조 사용, 없으면 기존 방식 폴백
    */
-  async captureScreenshot(profileId, result) {
+  async captureScreenshot(profileId, result, step = null) {
     try {
       if (!this.page) {
         this.log('스크린샷 캡처 실패: 페이지 객체 없음', 'warning');
         return;
       }
 
-      // 스크린샷 디렉토리 생성
+      const email = this.profileData?.email || this.profileData?.googleId || 'unknown';
+      const status = result.success ? 'success' : 'error';
+
+      // SessionLogService가 있고 세션이 활성화되어 있으면 새 방식 사용
+      if (this.sessionLogService?.hasActiveSession()) {
+        const stepName = step || (result.success ? '05_success' : `error_${result.errorType || 'unknown'}`);
+        const description = result.success ? '작업 완료' : `오류: ${result.error || 'unknown'}`;
+        await this.sessionLogService.capture(this.page, stepName, description);
+        return;
+      }
+
+      // 폴백: 기존 방식 (SessionLogService 없는 경우)
       const screenshotDir = path.join(process.cwd(), 'logs', 'screenshots');
       await fs.mkdir(screenshotDir, { recursive: true });
 
-      // 파일명 생성: 날짜-시간-계정아이디
       const now = new Date();
-      const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
-      const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '-'); // HH-MM-SS
-      const email = this.profileData.email || this.profileData.googleId || 'unknown';
-      const cleanEmail = email.replace(/@.*/, ''); // @ 이후 제거
-      const status = result.success ? 'success' : 'failed';
-      
+      const dateStr = now.toISOString().slice(0, 10);
+      const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '-');
+      const cleanEmail = email.replace(/@.*/, '');
+
       const filename = `${dateStr}_${timeStr}_${cleanEmail}_${status}.png`;
       const filepath = path.join(screenshotDir, filename);
 
-      // 스크린샷 캡처
       await this.page.screenshot({
         path: filepath,
-        fullPage: false // 현재 보이는 화면만
+        fullPage: false
       });
 
       this.log(`📷 스크린샷 저장: ${filename}`, 'info');
-      
-      // Logger가 있으면 로깅
-      if (this.logger && typeof this.logger.info === 'function') {
-        await this.logger.info(`스크린샷 저장됨`, {
-          profileId,
-          email,
-          filename,
-          path: filepath,
-          status
-        });
-      }
-      
+
     } catch (error) {
       this.log(`스크린샷 캡처 오류: ${error.message}`, 'error');
     }

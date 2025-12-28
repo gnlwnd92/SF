@@ -416,6 +416,9 @@ const TimeFilterService = require('./services/TimeFilterService');
 const WorkerLockService = require('./services/WorkerLockService');
 const ScheduledSubscriptionWorkerUseCase = require('./application/usecases/ScheduledSubscriptionWorkerUseCase');
 
+// 세션 로그 서비스 (스크린샷 + 로그 통합 관리)
+const SessionLogService = require('./services/SessionLogService');
+
 // 병렬 처리 및 모니터링 서비스 (Day 9-10)
 const ParallelBatchProcessor = require('./services/ParallelBatchProcessor');
 const RealTimeMonitoringDashboard = require('./services/RealTimeMonitoringDashboard');
@@ -842,7 +845,8 @@ function setupContainer(initialConfig = {}) {
         dateParser: container.resolve('dateParser'),  // 날짜 파싱 서비스 주입
         buttonService: container.resolve('buttonService'),  // ButtonInteractionService 주입
         mappingService: container.resolve('adsPowerIdMappingService'),  // AdsPowerIdMappingService 주입
-        hashProxyMapper: container.resolve('hashProxyMapper')  // 해시 기반 프록시 매핑 서비스 주입
+        hashProxyMapper: container.resolve('hashProxyMapper'),  // 해시 기반 프록시 매핑 서비스 주입
+        sessionLogService: container.resolve('sessionLogService')  // 세션 로그 서비스 주입
       })),
 
     // 갱신확인 일시중지 유스케이스
@@ -876,7 +880,8 @@ function setupContainer(initialConfig = {}) {
         config: container.resolve('config'),
         dateParser: container.resolve('dateParser'),  // 날짜 파싱 서비스 주입
         adsPowerIdMappingService: container.resolve('adsPowerIdMappingService'),  // AdsPower ID 매핑 서비스 주입
-        hashProxyMapper: container.resolve('hashProxyMapper')  // 해시 기반 프록시 매핑 서비스 주입
+        hashProxyMapper: container.resolve('hashProxyMapper'),  // 해시 기반 프록시 매핑 서비스 주입
+        sessionLogService: container.resolve('sessionLogService')  // 세션 로그 서비스 주입
       })) : asClass(ImprovedResumeSubscriptionUseCase).inject(() => ({
         adsPowerAdapter: container.resolve('adsPowerAdapter'),
         youtubeAdapter: container.resolve('youtubeAdapter'),
@@ -1340,6 +1345,14 @@ function setupContainer(initialConfig = {}) {
         logger: container.resolve('logger'),
         debugMode: config.debugMode || false,
         lockExpiryMinutes: 15  // 15분 초과 시 잠금 무효화
+      });
+    }).singleton(),
+
+    // 세션 로그 서비스 (스크린샷 + 로그 통합 관리) v1.0
+    sessionLogService: asFunction(() => {
+      return new SessionLogService({
+        logger: container.resolve('logger'),
+        debugMode: config.debugMode || false
       });
     }).singleton(),
 

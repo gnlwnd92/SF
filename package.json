@@ -58,7 +58,10 @@
     "batch:diagnose": "node diagnose-and-fix.js",
     "batch:improved": "node improved-defensive-batch.js",
     "batch:improved:pause": "node improved-defensive-batch.js --mode=pause",
-    "batch:improved:resume": "node improved-defensive-batch.js --mode=resume"
+    "batch:improved:resume": "node improved-defensive-batch.js --mode=resume",
+    "sessions:cleanup": "node scripts/session-cleanup.js",
+    "sessions:clear": "node scripts/session-clear.js",
+    "sessions:stats": "node scripts/session-stats.js"
   },
   "keywords": [
     "youtube",
