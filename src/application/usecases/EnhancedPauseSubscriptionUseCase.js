@@ -345,12 +345,28 @@ class EnhancedPauseSubscriptionUseCase {
       const currentStatus = await this.checkCurrentStatus(browser);
       
       if (this.detailedErrorLogger) {
-        this.detailedErrorLogger.endStep({ 
+        this.detailedErrorLogger.endStep({
           isPaused: currentStatus.isPaused,
-          nextBillingDate: currentStatus.nextBillingDate 
+          nextBillingDate: currentStatus.nextBillingDate
         });
       }
-      
+
+      // [v2.14] 결제 미완료 시 조기 종료
+      if (currentStatus.paymentPending) {
+        this.log(`⚠️ 결제 미완료 상태 - 작업 보류: ${currentStatus.paymentPendingReason}`, 'warning');
+        return {
+          success: false,
+          status: 'payment_pending',
+          paymentPendingReason: currentStatus.paymentPendingReason,
+          paymentPendingDaysUntil: currentStatus.paymentPendingDaysUntil,
+          nextBillingDate: currentStatus.nextBillingDate,
+          language: this.currentLanguage,
+          message: `결제 미완료 - ${currentStatus.paymentPendingReason}`,
+          browserIP: result.browserIP,
+          proxyId: result.proxyId
+        };
+      }
+
       // 이미 일시중지 상태인 경우
       if (currentStatus.isPaused) {
         this.log('이미 일시중지 상태입니다', 'warning');
@@ -2107,6 +2123,22 @@ class EnhancedPauseSubscriptionUseCase {
       // pauseDate가 없고 일시중지 상태인 경우에만 재개일을 다음 결제일로 사용 (fallback)
       status.nextBillingDate = status.pausedUntilDate;
       this.log(`📌 일시중지일이 없어서 재개일을 다음 결제일로 설정 (fallback): ${status.nextBillingDate}`, 'info');
+    }
+
+    // [v2.14] 결제 미완료 감지 - Pause 버튼 클릭 전에 판단
+    if (!status.isPaused && status.nextBillingDate && this.dateParser) {
+      try {
+        const pendingCheck = this.dateParser.detectPaymentPending(status.nextBillingDate);
+
+        if (pendingCheck.isPending) {
+          status.paymentPending = true;
+          status.paymentPendingReason = pendingCheck.reason;
+          status.paymentPendingDaysUntil = pendingCheck.daysUntil;
+          this.log(`⚠️ 결제 미완료 감지: ${pendingCheck.reason} (다음결제일: ${status.nextBillingDate})`, 'warning');
+        }
+      } catch (e) {
+        this.log(`결제 미완료 감지 오류: ${e.message}`, 'debug');
+      }
     }
 
     return status;

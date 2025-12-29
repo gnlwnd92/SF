@@ -16,6 +16,10 @@ module.exports = {
   // 재시도 설정
   maxRetryCount: 3,           // 최대 재시도 횟수
 
+  // [v2.14] 결제 미완료 재시도 설정 (시간 기반)
+  paymentPendingMaxHours: 24,        // 최대 대기 시간 (시간)
+  paymentPendingRetryMinutes: 30,    // 재시도 간격 (분)
+
   // 실행 모드
   continuous: true,           // 지속 실행 모드
   debugMode: true,            // 디버그 모드

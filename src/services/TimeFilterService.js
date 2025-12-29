@@ -371,6 +371,15 @@ class TimeFilterService {
         return false;
       }
 
+      // [v2.14] 결제 미완료 재시도 대기중인 작업 제외
+      // O열(pendingRetryAt)이 설정된 작업은 pendingRetryTargets에서 처리
+      if (task.pendingRetryAt) {
+        if (this.debugMode) {
+          this.logger.log(`  ⏭️ ${task.email}: 결제미완료 재시도 대기중 (${task.pendingRetryAt})`);
+        }
+        return false;
+      }
+
       // 재시도 횟수 체크
       const retryCount = parseInt(task.retryCount, 10) || 0;
       if (retryCount >= maxRetry) {
@@ -454,6 +463,170 @@ class TimeFilterService {
       const retryCount = parseInt(task.retryCount, 10) || 0;
       return retryCount < maxRetry;
     });
+  }
+
+  // ============================================================
+  // [v2.14] 결제 미완료 재시도 관련 메서드
+  // ============================================================
+
+  /**
+   * 한국 시간 문자열 → Date 객체 파싱
+   * 형식: "2025-12-29 15:30:45"
+   *
+   * @param {string} koreanTimeStr - 한국 시간 문자열
+   * @returns {Date|null} Date 객체 또는 null
+   */
+  parseKoreanTime(koreanTimeStr) {
+    if (!koreanTimeStr) return null;
+
+    try {
+      // "2025-12-29 15:30:45" → Date
+      const [datePart, timePart] = koreanTimeStr.split(' ');
+      if (!datePart || !timePart) return null;
+
+      const [year, month, day] = datePart.split('-').map(Number);
+      const [hour, minute, second] = timePart.split(':').map(Number);
+
+      if (isNaN(year) || isNaN(month) || isNaN(day) ||
+          isNaN(hour) || isNaN(minute)) {
+        return null;
+      }
+
+      // KST로 Date 생성 (month는 0-indexed)
+      return new Date(year, month - 1, day, hour, minute, second || 0);
+    } catch (error) {
+      if (this.debugMode) {
+        this.logger.warn(`[TimeFilterService] 한국 시간 파싱 실패: ${koreanTimeStr}`, error);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Date 객체 → 한국 시간 문자열 포맷
+   * 형식: "2025-12-29 15:30:45"
+   *
+   * [v2.14] Asia/Seoul 타임존 명시적 적용
+   * - 서버 타임존과 무관하게 항상 한국 시간 출력
+   * - Intl.DateTimeFormat.formatToParts() 사용으로 안정적인 파싱
+   *
+   * @param {Date} date - Date 객체 (기본값: 현재 시간)
+   * @returns {string} 한국 시간 문자열
+   */
+  formatKoreanTime(date = new Date()) {
+    try {
+      // Asia/Seoul 타임존으로 포맷팅
+      const formatter = new Intl.DateTimeFormat('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+
+      const parts = formatter.formatToParts(date);
+      const get = (type) => {
+        const part = parts.find(p => p.type === type);
+        return part ? part.value.padStart(2, '0') : '00';
+      };
+
+      return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+    } catch (error) {
+      // 폴백: 로컬 시간 사용 (이전 방식)
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const hour = String(date.getHours()).padStart(2, '0');
+      const minute = String(date.getMinutes()).padStart(2, '0');
+      const second = String(date.getSeconds()).padStart(2, '0');
+
+      return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+    }
+  }
+
+  /**
+   * 결제 미완료 재시도 대상 필터링
+   *
+   * 조건:
+   * - O열(pendingRetryAt)에 시각이 있고 해당 시각이 지남
+   * - N열(pendingCheckAt)로 24시간 제한 체크
+   * - 모든 시각은 한국 시간 문자열로 저장됨
+   *
+   * @param {Array} tasks - 작업 목록 (getIntegratedWorkerTasks()로 조회된)
+   * @param {number} [maxHours=24] - 최대 대기 시간 (시간)
+   * @returns {Array} 필터링된 작업 목록
+   */
+  filterPaymentPendingRetryTargets(tasks, maxHours = 24) {
+    if (!Array.isArray(tasks)) {
+      return [];
+    }
+
+    const now = this.getNow();
+
+    if (this.debugMode) {
+      this.logger.log(`\n[TimeFilterService] ===== 결제 미완료 재시도 대상 필터링 =====`);
+      this.logger.log(`  현재 시간: ${this.formatKoreanTime(now)}`);
+      this.logger.log(`  최대 대기: ${maxHours}시간`);
+    }
+
+    const filtered = tasks.filter(task => {
+      // O열(다음 재시도 시각)이 없으면 재시도 대상 아님
+      if (!task.pendingRetryAt) {
+        return false;
+      }
+
+      const email = task.googleId || task.email;
+
+      // N열(최초 감지 시각)으로 24시간 제한 체크
+      if (task.pendingCheckAt) {
+        const firstDetected = this.parseKoreanTime(task.pendingCheckAt);
+        if (firstDetected) {
+          const hoursElapsed = (now - firstDetected) / (1000 * 60 * 60);
+          if (hoursElapsed >= maxHours) {
+            if (this.debugMode) {
+              this.logger.log(`  ⏭️ ${email}: 24시간 초과 (${hoursElapsed.toFixed(1)}h >= ${maxHours}h)`);
+            }
+            return false;  // 24시간 초과 → 제외
+          }
+        }
+      }
+
+      // O열(다음 재시도 시각)이 지났으면 대상
+      const retryAt = this.parseKoreanTime(task.pendingRetryAt);
+      if (!retryAt) {
+        if (this.debugMode) {
+          this.logger.warn(`  ⚠️ ${email}: O열 시간 파싱 실패 - ${task.pendingRetryAt}`);
+        }
+        return false;
+      }
+
+      const isTarget = now >= retryAt;
+
+      if (this.debugMode) {
+        const status = isTarget ? '✅ 재시도 대상' : '❌ 대기중';
+        const waitMinutes = Math.round((retryAt - now) / (1000 * 60));
+        this.logger.log(`  ${status} ${email}: 재시도 예정 ${task.pendingRetryAt}${!isTarget ? ` (${waitMinutes}분 후)` : ''}`);
+      }
+
+      return isTarget;
+    });
+
+    // 정렬: 재시도 시각 ASC (먼저 예정된 것부터)
+    filtered.sort((a, b) => {
+      const retryAtA = this.parseKoreanTime(a.pendingRetryAt);
+      const retryAtB = this.parseKoreanTime(b.pendingRetryAt);
+      return (retryAtA?.getTime() || 0) - (retryAtB?.getTime() || 0);
+    });
+
+    if (this.debugMode) {
+      this.logger.log(`  결과: ${filtered.length}개 재시도 대상`);
+      this.logger.log(`==========================================\n`);
+    }
+
+    return filtered;
   }
 }
 

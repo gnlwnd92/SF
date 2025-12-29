@@ -1,16 +1,24 @@
 /**
- * ScheduledSubscriptionWorkerUseCase v2.12 - 통합워커 상태 기반 결제 주기 관리
+ * ScheduledSubscriptionWorkerUseCase v2.14 - 통합워커 상태 기반 결제 주기 관리
  *
  * 워크플로우:
  * [일시중지 상태] → 결제 시간 임박(now + M분) → 결제재개 → [결제중 상태]
  * [결제중 상태] → 결제 완료 후(now - N분) → 일시중지 → [일시중지 상태]
+ * [결제 미완료] → 30분 재시도 (최대 24시간) → 성공 시 일시중지 / 24시간 초과 시 수동체크
  *
  * 특징:
  * - '통합워커' 단일 탭 사용
  * - E열 상태 기반 작업 선택 (일시중지/결제중)
  * - L열 재시도 횟수 공유 (분산 워커 간)
  * - J열 잠금으로 충돌 방지
+ * - N열/O열 결제 미완료 재시도 시간 관리 (v2.14)
  * - 지속 실행 모드 (Ctrl+C로 안전 종료)
+ *
+ * v2.14 변경사항:
+ * - 결제 미완료 감지 및 시간 기반 24시간 재시도 시스템
+ * - N열(결제미완료_체크): 최초 감지 시각 (한국 시간)
+ * - O열(결제미완료_재시작): 다음 재시도 시각 (한국 시간)
+ * - payment_pending 상태 처리
  *
  * v2.12 변경사항:
  * - 터미널 로그 UX 개선 (비전문가 친화적)
@@ -207,14 +215,23 @@ class ScheduledSubscriptionWorkerUseCase {
         maxRetryCount
       );
 
+      // 5. [v2.14] 결제 미완료 재시도 대상 필터링
+      const paymentPendingMaxHours = WORKER_DEFAULTS.paymentPendingMaxHours || 24;
+      const pendingRetryTargets = this.timeFilterService.filterPaymentPendingRetryTargets(
+        unlockedTasks,
+        paymentPendingMaxHours
+      );
+
       // [v2.12+] 사이클 로그 간소화
-      if (resumeTargets.length === 0 && pauseTargets.length === 0) {
+      const hasWork = resumeTargets.length > 0 || pauseTargets.length > 0 || pendingRetryTargets.length > 0;
+      if (!hasWork) {
         // 작업 없으면 1줄 요약
         this.log(chalk.gray(`💤 대기 중 (${allTasks.length}개 모니터링)`));
       } else {
         // 작업 있으면 구분선 + 요약
         this.log(`${'─'.repeat(40)}`);
-        this.log(chalk.cyan(`📋 작업 발견: 재개 ${resumeTargets.length}건, 일시중지 ${pauseTargets.length}건`));
+        const pendingInfo = pendingRetryTargets.length > 0 ? `, 결제미완료재시도 ${pendingRetryTargets.length}건` : '';
+        this.log(chalk.cyan(`📋 작업 발견: 재개 ${resumeTargets.length}건, 일시중지 ${pauseTargets.length}건${pendingInfo}`));
         this.log(`${'─'.repeat(40)}`);
       }
 
@@ -230,8 +247,15 @@ class ScheduledSubscriptionWorkerUseCase {
         await this.processTask(task, 'pause', maxRetryCount, debugMode);
       }
 
-      // 7. 사이클 요약 (작업이 있었을 때만)
-      if (resumeTargets.length > 0 || pauseTargets.length > 0) {
+      // 7. [v2.14] 결제 미완료 재시도 대상 처리 (일시중지 작업으로)
+      for (const task of pendingRetryTargets) {
+        if (this.shouldStop) break;
+        this.log(chalk.yellow(`🔄 ${task.email || task.googleId} 결제미완료 재시도 중...`));
+        await this.processTask(task, 'pause', maxRetryCount, debugMode);
+      }
+
+      // 8. 사이클 요약 (작업이 있었을 때만)
+      if (hasWork) {
         this.printCycleSummary();
       }
 
@@ -302,12 +326,18 @@ class ScheduledSubscriptionWorkerUseCase {
 
       if (result.success) {
         // 성공: 상태 변경 + 결과 기록 + 재시도 리셋 + 다음결제일 업데이트
-        const newStatus = type === 'resume' ? '결제중' : '일시중지';
         const resultText = this.formatResultText(type, true, result);
         const elapsed = Math.round((Date.now() - startTime) / 1000);
 
         // 무한루프 감지를 위해 기존 H열 내용 조회 (업데이트 전)
         const existingResult = await this.sheetsRepository.getIntegratedWorkerResultValue(rowIndex);
+        const combinedResult = existingResult ? `${existingResult}\n${resultText}` : resultText;
+        const isInfiniteLoop = this.checkInfiniteLoop(combinedResult, type);
+
+        // 무한루프 감지 시 상태를 '수동체크-무한루프'로 변경 (API 중복 호출 방지)
+        const newStatus = isInfiniteLoop
+          ? '수동체크-무한루프'
+          : (type === 'resume' ? '결제중' : '일시중지');
 
         await this.sheetsRepository.updateIntegratedWorkerOnSuccess(rowIndex, {
           newStatus,
@@ -316,6 +346,11 @@ class ScheduledSubscriptionWorkerUseCase {
           proxyId: result.proxyId || null,
           nextBillingDate: result.nextBillingDate || null
         });
+
+        // [v2.14] 결제 미완료 열 초기화 (성공 시)
+        if (task.pendingCheckAt || task.pendingRetryAt) {
+          await this.sheetsRepository.clearIntegratedWorkerPendingColumns(rowIndex);
+        }
 
         this.stats[type].success++;
 
@@ -342,10 +377,8 @@ class ScheduledSubscriptionWorkerUseCase {
           }
         }
 
-        // 무한루프 감지: 동일 작업 성공이 3회 이상이면 상태 변경
-        const combinedResult = existingResult ? `${existingResult}\n${resultText}` : resultText;
-        if (this.checkInfiniteLoop(combinedResult, type)) {
-          await this.sheetsRepository.updateIntegratedWorkerStatus(rowIndex, '수동체크-무한루프');
+        // 무한루프 감지 로그 출력 (상태 변경은 이미 위에서 처리됨)
+        if (isInfiniteLoop) {
           this.logCritical('무한루프 감지', email, 'E열 수동체크-무한루프로 변경됨');
         }
 
@@ -402,6 +435,12 @@ class ScheduledSubscriptionWorkerUseCase {
     // 실패 시에도 사용한 IP/프록시 추출 (G열, M열 누적용)
     const usedIP = result.browserIP || result.ip || null;
     const usedProxyId = result.proxyId || null;
+
+    // 0. [v2.14] 결제 미완료 상태 확인
+    if (result.status === 'payment_pending') {
+      await this.handlePaymentPending(task, rowIndex, result, usedIP, usedProxyId);
+      return;
+    }
 
     // 1. 영구 실패 상태 확인 (재시도 불가) - 심각 오류로 표시
     const permanentStatus = this.getPermanentFailureStatus(result);
@@ -537,6 +576,86 @@ class ScheduledSubscriptionWorkerUseCase {
     }
 
     return null;  // 일반 실패 (재시도 가능)
+  }
+
+  /**
+   * [v2.14] 결제 미완료 상태 처리
+   * - 최초 감지 시: N열에 현재 시각 기록
+   * - 24시간 초과 시: 수동체크-결제지연 상태로 변경
+   * - 그 외: O열에 다음 재시도 시각 기록
+   *
+   * @param {Object} task - 작업 정보
+   * @param {number} rowIndex - 행 번호
+   * @param {Object} result - UseCase 실행 결과
+   * @param {string} usedIP - 사용한 IP
+   * @param {string} usedProxyId - 사용한 프록시 ID
+   */
+  async handlePaymentPending(task, rowIndex, result, usedIP, usedProxyId) {
+    const email = task.email || task.googleId || 'Unknown';
+    const now = new Date();
+    const retryMinutes = WORKER_DEFAULTS.paymentPendingRetryMinutes || 30;
+    const maxHours = WORKER_DEFAULTS.paymentPendingMaxHours || 24;
+    const reason = result.paymentPendingReason || '결제일이 오늘';
+
+    // 최초 감지 시각 확인 (N열) - 한국 시간 문자열
+    let firstDetectedAt = task.pendingCheckAt;
+    const isFirstDetection = !firstDetectedAt;
+
+    if (isFirstDetection) {
+      // 최초 감지: N열에 현재 한국 시간 기록
+      firstDetectedAt = this.timeFilterService.formatKoreanTime(now);
+      await this.sheetsRepository.setIntegratedWorkerPendingCheckAt(rowIndex, firstDetectedAt);
+      this.log(chalk.yellow(`   ⏳ ${email} 결제 미완료 감지: ${reason} (최초)`));
+    }
+
+    // 24시간 제한 체크 (한국 시간 파싱)
+    let firstDetectedDate = this.timeFilterService.parseKoreanTime(firstDetectedAt);
+
+    // [v2.14] N열 파싱 실패 시 현재 시각으로 재설정 (손상된 데이터 복구)
+    if (!firstDetectedDate && firstDetectedAt) {
+      this.log(chalk.red(`   ⚠️ ${email} N열 파싱 실패: "${firstDetectedAt}" - 현재 시각으로 재설정`));
+      firstDetectedAt = this.timeFilterService.formatKoreanTime(now);
+      await this.sheetsRepository.setIntegratedWorkerPendingCheckAt(rowIndex, firstDetectedAt);
+      firstDetectedDate = now;  // 파싱된 Date 객체로 설정
+    }
+
+    const hoursElapsed = firstDetectedDate ? (now - firstDetectedDate) / (1000 * 60 * 60) : 0;
+
+    if (hoursElapsed >= maxHours) {
+      // 24시간 초과 → 수동체크 상태로
+      const resultText = `⏰ 결제미완료 ${maxHours}시간 대기 초과 | ${reason} | ${this.timeFilterService.formatShortDateTime(now)}`;
+      await this.sheetsRepository.updateIntegratedWorkerPermanentFailure(rowIndex, {
+        newStatus: '수동체크-결제지연',
+        resultText,
+        ip: usedIP,
+        proxyId: usedProxyId
+      });
+      await this.sheetsRepository.clearIntegratedWorkerPendingColumns(rowIndex);
+
+      this.stats.pause.failed++;
+      this.logCritical('결제 미완료 24시간 초과', email, '수동 확인 필요');
+      return;
+    }
+
+    // 다음 재시도 시각 계산 (O열) - 한국 시간
+    const retryAt = new Date(now.getTime() + retryMinutes * 60 * 1000);
+    const retryAtKorean = this.timeFilterService.formatKoreanTime(retryAt);
+    const setRetryResult = await this.sheetsRepository.setIntegratedWorkerPendingRetryAt(rowIndex, retryAtKorean);
+
+    // [v2.14] O열 설정 실패 시 경고 (다음 사이클에서 pauseTargets로 재처리됨)
+    if (!setRetryResult) {
+      this.log(chalk.red(`   ⚠️ ${email} O열 설정 실패 - 다음 사이클에서 재시도`));
+    }
+
+    // 결과 기록 (H열 누적)
+    const retryInfo = `⏳ 결제미완료 | ${reason} | 재시도 ${retryAtKorean.split(' ')[1]} | 경과 ${hoursElapsed.toFixed(1)}h`;
+    await this.sheetsRepository.appendIntegratedWorkerResult(rowIndex, retryInfo);
+
+    // 잠금 해제 (다른 작업 가능하도록)
+    await this.workerLockService.releaseIntegratedWorkerLock(rowIndex);
+
+    this.stats.pause.skipped++;  // 재시도 대기 = skipped 카운트
+    this.log(chalk.yellow(`   ⏳ ${email} 결제 미완료 - ${retryMinutes}분 후 재시도 (${hoursElapsed.toFixed(1)}h/${maxHours}h)`));
   }
 
   /**

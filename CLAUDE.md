@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
-**버전**: v2.10 (2025-12-28)
+**버전**: v2.13 (2025-12-29)
 
 ## Core Commands
 
@@ -286,7 +286,7 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
 | `애즈파워현황` | 전체 프로필 목록 (AdsPower ID 매핑) |
 | `일시정지` | 일시정지 대상 |
 | `재개` | 재개 대상 |
-| `통합워커` | 상태 기반 자동 관리 (E열: 상태, I열: 시간, J열: 잠금, L열: 재시도, N열: IP, O열: proxyId) |
+| `통합워커` | 상태 기반 자동 관리 (E열: 상태, F열: 다음결제일, G열: IP, H열: 결과, I열: 시간, J열: 잠금, K열: 결제카드, L열: 재시도, M열: proxyId) |
 | `백업` | TXT 백업 데이터 |
 | `프록시` | 24h Sticky 세션 프록시 (A-K열: ID, 유형, 호스트, 포트, 사용자명, 비밀번호, 국가, 상태, 연속실패횟수, 마지막사용시간, 최근IP) |
 

@@ -784,6 +784,169 @@ class EnhancedDateParsingService {
       return [];
     }
   }
+
+  /**
+   * [v2.14] 날짜 텍스트에서 월/일만 추출 (연도 없는 경우)
+   * @param {string} rawDate - 원본 날짜 텍스트 (예: "Dec 29", "1월 29일")
+   * @param {string} language - 언어 코드
+   * @returns {{ month: number, day: number } | null}
+   */
+  extractMonthDayOnly(rawDate, language = 'en') {
+    if (!rawDate) return null;
+
+    const cleanText = rawDate.toString().trim();
+
+    // 패턴별로 월/일 추출 시도
+    const patterns = [
+      // 영어: Dec 29, January 15
+      { regex: /([A-Za-z]+)\s+(\d{1,2})/, extract: (m) => ({ month: this.parseMonth(m[1], language), day: parseInt(m[2]) }) },
+      // 한국어: 1월 29일
+      { regex: /(\d{1,2})월\s*(\d{1,2})일?/, extract: (m) => ({ month: parseInt(m[1]), day: parseInt(m[2]) }) },
+      // 일본어/중국어: 1月29日
+      { regex: /(\d{1,2})月(\d{1,2})日/, extract: (m) => ({ month: parseInt(m[1]), day: parseInt(m[2]) }) },
+      // 유럽식: 29 Dec, 29 enero
+      { regex: /(\d{1,2})\s+([A-Za-zàâäéèêëïîôùûüÿœæçğıİşŞöÖçÇüÜа-яА-ЯёЁ]+)\.?/, extract: (m) => ({ month: this.parseMonth(m[2], language), day: parseInt(m[1]) }) },
+      // 포르투갈어: 29/01 (DD/MM)
+      { regex: /(\d{1,2})\/(\d{1,2})(?!\/)/, extract: (m) => ({ day: parseInt(m[1]), month: parseInt(m[2]) }) }
+    ];
+
+    for (const pattern of patterns) {
+      const match = cleanText.match(pattern.regex);
+      if (match) {
+        const result = pattern.extract(match);
+        if (result.month && result.day && result.month >= 1 && result.month <= 12 && result.day >= 1 && result.day <= 31) {
+          return result;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * [v2.14] Date 객체를 YYYY-MM-DD 형식으로 변환
+   * @param {Date} date - Date 객체
+   * @returns {string} YYYY-MM-DD 형식 문자열
+   */
+  formatToISO(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * [v2.14] 모든 날짜 중 가장 가까운 미래 날짜를 다음 결제일로 선택
+   * 연도가 없는 날짜는 올해/내년 양방향으로 파싱하여 후보에 추가
+   *
+   * @param {Array<string>} rawDates - 원본 날짜 텍스트 배열
+   * @param {string} language - 언어 코드
+   * @returns {{ nextBillingDate: string | null, resumeDate: string | null }}
+   */
+  selectNearestFutureDates(rawDates, language = 'en') {
+    if (!rawDates || rawDates.length === 0) {
+      return { nextBillingDate: null, resumeDate: null };
+    }
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const candidates = [];
+
+    for (const rawDate of rawDates) {
+      if (!rawDate) continue;
+
+      // 연도가 명시된 경우 (4자리 숫자 포함)
+      if (/\d{4}/.test(rawDate)) {
+        const parsed = this.parseDate(rawDate, language, 'pause');
+        if (parsed) {
+          candidates.push({ date: new Date(parsed), original: rawDate, source: 'explicit_year' });
+        }
+        continue;
+      }
+
+      // 연도 없는 경우: 올해와 내년 모두 후보에 추가
+      const monthDay = this.extractMonthDayOnly(rawDate, language);
+      if (monthDay) {
+        const thisYear = new Date(now.getFullYear(), monthDay.month - 1, monthDay.day);
+        const nextYear = new Date(now.getFullYear() + 1, monthDay.month - 1, monthDay.day);
+
+        candidates.push({ date: thisYear, original: rawDate, source: 'this_year' });
+        candidates.push({ date: nextYear, original: rawDate, source: 'next_year' });
+      }
+    }
+
+    if (candidates.length === 0) {
+      return { nextBillingDate: null, resumeDate: null };
+    }
+
+    // 오늘 이후 날짜만 필터 + 가장 가까운 순 정렬
+    const futureDates = candidates
+      .filter(c => c.date >= today)
+      .sort((a, b) => a.date - b.date);
+
+    if (futureDates.length === 0) {
+      return { nextBillingDate: null, resumeDate: null };
+    }
+
+    // 가장 가까운 날짜 = 다음 결제일
+    const nextBillingDate = this.formatToISO(futureDates[0].date);
+
+    // 두 번째로 가까운 날짜 = 재개일 (있는 경우)
+    // 같은 날짜(다른 연도)는 제외
+    let resumeDate = null;
+    if (futureDates.length > 1) {
+      // 첫 번째와 다른 날짜 찾기
+      for (let i = 1; i < futureDates.length; i++) {
+        const candidateISO = this.formatToISO(futureDates[i].date);
+        if (candidateISO !== nextBillingDate) {
+          resumeDate = candidateISO;
+          break;
+        }
+      }
+    }
+
+    if (this.debugEnabled) {
+      console.log(chalk.green(`🎯 selectNearestFutureDates 결과:`));
+      console.log(chalk.gray(`   후보 수: ${candidates.length}, 미래 날짜 수: ${futureDates.length}`));
+      console.log(chalk.gray(`   다음 결제일: ${nextBillingDate}`));
+      console.log(chalk.gray(`   재개일: ${resumeDate || '없음'}`));
+    }
+
+    return { nextBillingDate, resumeDate };
+  }
+
+  /**
+   * [v2.14] 결제 미완료 상태 감지
+   * 다음 결제일이 오늘 +-1일 이내면 결제가 아직 완료되지 않았을 가능성이 높음
+   *
+   * @param {string} nextBillingDate - YYYY-MM-DD 형식의 다음 결제일
+   * @returns {{ isPending: boolean, daysUntil: number, reason: string | null }}
+   */
+  detectPaymentPending(nextBillingDate) {
+    if (!nextBillingDate) {
+      return { isPending: false, daysUntil: null, reason: null };
+    }
+
+    const billingDate = new Date(nextBillingDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    billingDate.setHours(0, 0, 0, 0);
+
+    const daysUntil = Math.round((billingDate - today) / (1000 * 60 * 60 * 24));
+    const isPending = Math.abs(daysUntil) <= 1;
+
+    let reason = null;
+    if (daysUntil === 0) reason = '결제일이 오늘';
+    else if (daysUntil === 1) reason = '결제일이 내일';
+    else if (daysUntil === -1) reason = '결제일이 어제';
+
+    if (this.debugEnabled && isPending) {
+      console.log(chalk.yellow(`⚠️ 결제 미완료 감지: ${reason} (다음결제일: ${nextBillingDate}, daysUntil: ${daysUntil})`));
+    }
+
+    return { isPending, daysUntil, reason };
+  }
 }
 
 module.exports = EnhancedDateParsingService;

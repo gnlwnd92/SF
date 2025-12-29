@@ -1147,8 +1147,9 @@ class PauseSheetRepository {
   }
 
   /**
-   * 통합워커 탭에서 전체 작업 목록 가져오기 (A:L 범위)
-   * 상태(E열), 시간(I열), 잠금(J열), 재시도(L열) 포함
+   * 통합워커 탭에서 전체 작업 목록 가져오기 (A:O 범위)
+   * 상태(E열), 시간(I열), 잠금(J열), 재시도(L열), 프록시(M열),
+   * 결제미완료_체크(N열), 결제미완료_재시작(O열) 포함
    *
    * @returns {Promise<Array>} 작업 목록
    */
@@ -1158,7 +1159,7 @@ class PauseSheetRepository {
     try {
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: `${this.integratedWorkerSheetName}!A:L`
+        range: `${this.integratedWorkerSheetName}!A:O`
       });
 
       const rows = response.data.values || [];
@@ -1182,7 +1183,10 @@ class PauseSheetRepository {
         scheduledTimeStr: row[8] || '',  // I열: 시간 (HH:mm)
         lockValue: row[9] || '',         // J열: 잠금
         paymentCard: row[10] || '',      // K열: 결제카드
-        retryCount: row[11] || ''        // L열: 재시도 횟수
+        retryCount: row[11] || '',       // L열: 재시도 횟수
+        proxyId: row[12] || '',          // M열: 프록시 ID
+        pendingCheckAt: row[13] || '',   // N열: 결제미완료_체크 (최초 감지 시각, 한국 시간)
+        pendingRetryAt: row[14] || ''    // O열: 결제미완료_재시작 (다음 재시도 시각, 한국 시간)
       }));
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 작업 목록 조회 실패:`, error.message);
@@ -1817,6 +1821,146 @@ class PauseSheetRepository {
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 실패 업데이트 실패:`, error.message);
       return -1;
+    }
+  }
+
+  // ============================================================
+  // [v2.14] 결제 미완료 재시도 관련 메서드 (N열, O열)
+  // N열: 결제미완료_체크 (최초 감지 시각, 한국 시간)
+  // O열: 결제미완료_재시작 (다음 재시도 시각, 한국 시간)
+  // ============================================================
+
+  /**
+   * 통합워커 탭의 N열(결제미완료_체크) 값 읽기
+   * 최초로 결제 미완료 상태를 감지한 시각 (한국 시간)
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string|null>} 한국 시간 문자열 (예: "2025-12-29 15:30:45") 또는 null
+   */
+  async getIntegratedWorkerPendingCheckAt(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!N${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : null;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 N열 조회 실패:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 N열(결제미완료_체크) 값 설정
+   * 최초로 결제 미완료 상태를 감지한 시각 기록
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} koreanTimeStr - 한국 시간 문자열 (예: "2025-12-29 15:30:45")
+   * @returns {Promise<boolean>}
+   */
+  async setIntegratedWorkerPendingCheckAt(rowIndex, koreanTimeStr) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!N${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[koreanTimeStr]]
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 N열 결제미완료_체크 설정: 행${rowIndex} → "${koreanTimeStr}"`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 N열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 O열(결제미완료_재시작) 값 읽기
+   * 다음 재시도 예정 시각 (한국 시간)
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<string|null>} 한국 시간 문자열 (예: "2025-12-29 16:00:45") 또는 null
+   */
+  async getIntegratedWorkerPendingRetryAt(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!O${rowIndex}`
+      });
+
+      const values = response.data.values;
+      return values && values[0] && values[0][0] ? values[0][0] : null;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 O열 조회 실패:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 O열(결제미완료_재시작) 값 설정
+   * 다음 재시도 예정 시각 기록
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @param {string} koreanTimeStr - 한국 시간 문자열 (예: "2025-12-29 16:00:45")
+   * @returns {Promise<boolean>}
+   */
+  async setIntegratedWorkerPendingRetryAt(rowIndex, koreanTimeStr) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!O${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [[koreanTimeStr]]
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 O열 결제미완료_재시작 설정: 행${rowIndex} → "${koreanTimeStr}"`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 O열 업데이트 실패:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * 통합워커 탭의 N열, O열(결제미완료 관련) 동시 초기화
+   * 작업 성공 시 또는 24시간 초과 시 호출
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<boolean>}
+   */
+  async clearIntegratedWorkerPendingColumns(rowIndex) {
+    await this.initialize();
+
+    try {
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!N${rowIndex}:O${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [['', '']]
+        }
+      });
+
+      console.log(`[PauseSheetRepository] 통합워커 N/O열 결제미완료 초기화: 행${rowIndex}`);
+      return true;
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 N/O열 초기화 실패:`, error.message);
+      return false;
     }
   }
 }

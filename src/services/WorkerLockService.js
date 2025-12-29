@@ -91,7 +91,7 @@ class WorkerLockService {
   /**
    * 잠금 유효성 검사
    * - 빈 값이면 잠금 없음 → true (획득 가능)
-   * - 15분 초과 시 무효 → true (획득 가능)
+   * - 5분 초과 시 무효 → true (획득 가능) (v2.11: 15분 → 5분으로 단축)
    * - 유효한 잠금 → false (획득 불가)
    *
    * @param {string} lockValue - J열 값
