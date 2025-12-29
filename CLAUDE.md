@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
-**버전**: v2.13 (2025-12-29)
+**버전**: v2.14 (2025-12-29)
 
 ## Core Commands
 
@@ -286,7 +286,7 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
 | `애즈파워현황` | 전체 프로필 목록 (AdsPower ID 매핑) |
 | `일시정지` | 일시정지 대상 |
 | `재개` | 재개 대상 |
-| `통합워커` | 상태 기반 자동 관리 (E열: 상태, F열: 다음결제일, G열: IP, H열: 결과, I열: 시간, J열: 잠금, K열: 결제카드, L열: 재시도, M열: proxyId) |
+| `통합워커` | 상태 기반 자동 관리 (E열: 상태, F열: 다음결제일, G열: IP, H열: 결과, I열: 시간, J열: 잠금, K열: 결제카드, L열: 재시도, M열: proxyId, N열: 결제미완료_체크, O열: 결제미완료_재시작) |
 | `백업` | TXT 백업 데이터 |
 | `프록시` | 24h Sticky 세션 프록시 (A-K열: ID, 유형, 호스트, 포트, 사용자명, 비밀번호, 국가, 상태, 연속실패횟수, 마지막사용시간, 최근IP) |
 
@@ -301,9 +301,33 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
   pauseMinutesAfter: 10,      // 일시중지: 결제 후 10분
   checkIntervalSeconds: 60,   // 체크 간격 60초
   maxRetryCount: 3,           // 최대 재시도 3회
-  humanLikeMotion: true       // 휴먼라이크 인터랙션
+  humanLikeMotion: true,      // 휴먼라이크 인터랙션
+
+  // [v2.14] 결제 미완료 재시도 설정
+  paymentPendingMaxHours: 24,       // 최대 대기 시간 (시간)
+  paymentPendingRetryMinutes: 30    // 재시도 간격 (분)
 }
 ```
+
+### 결제 미완료 감지 시스템 (v2.14)
+
+시트에 기록된 결제일이 잘못된 경우, 결제가 안 됐는데 일시중지 작업을 진행하는 문제 방지:
+
+**감지 조건**: 다음 결제일이 오늘 ±1일 이내
+**처리 방식**: 시간 기반 24시간 재시도 (횟수 기반 아님)
+
+| 열 | 필드명 | 용도 |
+|----|--------|------|
+| N | 결제미완료_체크 | 최초 감지 시각 (한국 시간) - 24시간 제한 기준 |
+| O | 결제미완료_재시작 | 다음 재시도 시각 (한국 시간) - 분산 워커 동기화 |
+
+**흐름**:
+1. `checkCurrentStatus()`에서 결제 미완료 감지 (Pause 클릭 전)
+2. N열 최초 설정 → O열에 30분 후 시각 기록
+3. `filterPaymentPendingRetryTargets()`로 재시도 대상 필터링
+4. 24시간 초과 시 '수동체크-결제지연' 상태로 전환
+
+**중요**: `filterPauseTargets()`에서 `pendingRetryAt`이 있는 작업은 반드시 제외해야 함
 
 ## 휴먼라이크 인터랙션 (v2.4)
 
@@ -378,3 +402,5 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 11. **프록시 설정시**: `proxy_port: String(port)`, `proxy_soft: 'other'` 필수
 12. **로거 사용시**: 옵셔널 메서드는 `_log()` 헬퍼 패턴 사용 (debug/warn 없을 수 있음)
 13. **프록시 변경시**: 반드시 `closeBrowser()` 후 `updateProfile()` → `openBrowser()` 순서
+14. **결제 미완료 필터링시**: `pendingRetryAt`이 있는 작업은 `filterPauseTargets()`에서 제외 (v2.14)
+15. **한국 시간 사용시**: `Intl.DateTimeFormat`과 `Asia/Seoul` 타임존 사용 (로컬 시간 메서드 X)
