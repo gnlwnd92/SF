@@ -115,6 +115,7 @@ class SessionLogService {
    * 세션 종료 - meta.json 및 log.txt 마무리
    * @param {string} result - 'success' | 'error'
    * @param {Object} details - 추가 정보
+   * @param {string} details.resultType - 'newly_completed' | 'already_completed' (상세 결과 타입)
    */
   endSession(result, details = {}) {
     if (!this.session) {
@@ -127,9 +128,10 @@ class SessionLogService {
     const endTime = new Date();
     const duration = Math.round((endTime - this.session.startTime) / 1000);
 
-    // 종료 로그 작성
+    // 종료 로그 작성 (상세 결과 타입 포함)
     const resultEmoji = result === 'success' ? '✅' : '❌';
-    this.writeLog(`작업 완료: ${result}`, true);
+    const resultTypeLabel = this._getResultTypeLabel(result, details.resultType);
+    this.writeLog(`작업 완료: ${resultTypeLabel}`, true);
 
     // log.txt 마무리
     this._writeLogFooter(result, duration, details);
@@ -138,11 +140,30 @@ class SessionLogService {
     this._writeMetaJson(result, endTime, duration, details);
 
     if (this.debugMode) {
-      this.logger.log(`[SessionLogService] 세션 종료: ${result}, ${duration}초`);
+      this.logger.log(`[SessionLogService] 세션 종료: ${resultTypeLabel}, ${duration}초`);
     }
 
     // 세션 초기화
     this.session = null;
+  }
+
+  /**
+   * 결과 타입 레이블 반환
+   * @param {string} result - 'success' | 'error'
+   * @param {string} resultType - 'newly_completed' | 'already_completed'
+   */
+  _getResultTypeLabel(result, resultType) {
+    if (result !== 'success') {
+      return result; // error는 그대로
+    }
+
+    // 성공인 경우 상세 타입 구분
+    if (resultType === 'already_completed') {
+      return '이미완료';
+    } else if (resultType === 'newly_completed') {
+      return '신규성공';
+    }
+    return 'success'; // 기본값 (하위 호환성)
   }
 
   /**
@@ -267,11 +288,24 @@ class SessionLogService {
     const logPath = path.join(this.session.path, 'log.txt');
     const endTimeStr = new Date().toLocaleString('ko-KR');
     const resultEmoji = result === 'success' ? '✅' : '❌';
-    const resultLabel = result === 'success' ? '작업 완료' : '작업 실패';
+
+    // 상세 결과 레이블 결정
+    let resultLabel;
+    if (result === 'success') {
+      if (details.resultType === 'already_completed') {
+        resultLabel = '이미완료 (기존 상태 확인)';
+      } else if (details.resultType === 'newly_completed') {
+        resultLabel = '신규성공 (상태 변경됨)';
+      } else {
+        resultLabel = '작업 완료';
+      }
+    } else {
+      resultLabel = '작업 실패';
+    }
 
     let footer = `
 ════════════════════════════════════════════════════════
-${resultEmoji} ${resultLabel}: ${result}
+${resultEmoji} ${resultLabel}
    종료: ${endTimeStr}
    소요: ${duration}초
 `;
@@ -308,6 +342,10 @@ ${resultEmoji} ${resultLabel}: ${result}
       },
       result: {
         status: result,
+        // v2.15: 상세 결과 타입 추가 (신규성공 vs 이미완료)
+        resultType: details.resultType || null,
+        isNewlyCompleted: details.resultType === 'newly_completed',
+        isAlreadyCompleted: details.resultType === 'already_completed',
         nextBillingDate: details.nextBillingDate || null,
         error: result === 'error' ? {
           type: details.errorType || 'unknown',

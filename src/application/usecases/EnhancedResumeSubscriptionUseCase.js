@@ -319,7 +319,10 @@ class EnhancedResumeSubscriptionUseCase {
       }
 
       const currentStatus = await this.checkCurrentStatus(browser);
-      
+
+      // [v2.15] 상태 확인 후 스크린샷
+      await this.captureStepScreenshot('01_status_check', `상태확인: ${currentStatus.isActive ? '활성' : (currentStatus.isPausedScheduled ? '중지예약' : '중지됨')}`);
+
       // 이미 활성 상태인 경우
       if (currentStatus.isActive && !currentStatus.isPausedScheduled) {
         this.log('이미 활성 상태입니다', 'warning');
@@ -692,12 +695,22 @@ class EnhancedResumeSubscriptionUseCase {
     // SessionLogService 세션 종료 (스크린샷 + 로그 통합 관리)
     if (this.sessionLogService?.hasActiveSession()) {
       const sessionResult = result.success ? 'success' : 'error';
+      // v2.15: 결과 타입 구분 (신규성공 vs 이미완료)
+      let resultType = null;
+      if (result.success) {
+        if (result.status === 'already_active' || result.alreadyActive) {
+          resultType = 'already_completed';
+        } else if (result.status === 'resumed') {
+          resultType = 'newly_completed';
+        }
+      }
       this.sessionLogService.endSession(sessionResult, {
         nextBillingDate: result.nextBillingDate,
         error: result.error,
         errorType: result.timedOut ? 'timeout' : (result.skippedDueToStagnation ? 'stagnation' : 'unknown'),
         errorStep: result.status,
-        language: this.currentLanguage
+        language: this.currentLanguage,
+        resultType
       });
     }
 
@@ -3829,6 +3842,9 @@ class EnhancedResumeSubscriptionUseCase {
           throw new Error('Resume 버튼 클릭 실패');
         }
         console.log(chalk.green('    ✅ Resume 버튼 클릭 성공'));
+
+        // [v2.15] Resume 버튼 클릭 후 스크린샷
+        await this.captureStepScreenshot('02_resume_click', 'Resume 버튼 클릭');
       }
       // Case 3: 상태를 명확히 판별할 수 없는 경우
       else if (!statusBeforeAction.isPaused && !statusBeforeAction.isActive) {
@@ -3989,7 +4005,10 @@ class EnhancedResumeSubscriptionUseCase {
       }
       
       await saveDebugScreenshot('workflow-final-verification');
-      
+
+      // [v2.15] 최종 검증 후 스크린샷
+      await this.captureStepScreenshot('03_verify', `검증: ${finalStatus.success ? '성공' : '실패'}`);
+
       if (finalStatus.success) {
         result.success = true;
         this.log('구독 재개 성공 확인!', 'success');
@@ -6054,6 +6073,21 @@ class EnhancedResumeSubscriptionUseCase {
     } catch (error) {
       this.log(`스크린샷 캡처 실패: ${error.message}`, 'warning');
       return null;
+    }
+  }
+
+  /**
+   * 단계별 스크린샷 촬영 (v2.15)
+   * @param {string} step - 단계명 (예: '01_navigation', '02_status_check')
+   * @param {string} description - 설명
+   */
+  async captureStepScreenshot(step, description) {
+    if (this.sessionLogService?.hasActiveSession() && this.page) {
+      try {
+        await this.sessionLogService.capture(this.page, step, description);
+      } catch (e) {
+        this.log(`스크린샷 촬영 실패 (${step}): ${e.message}`, 'debug');
+      }
     }
   }
 

@@ -48,7 +48,13 @@
       "mcp__filesystem__read_multiple_files",
       "mcp__filesystem__list_directory",
       "mcp__filesystem__list_directory_with_sizes",
-      "mcp__filesystem__write_file"
+      "mcp__filesystem__write_file",
+      "Bash(npm install)",
+      "Bash(node test-schema.js:*)",
+      "Bash(set USE_MOCK_REPOSITORY=true)",
+      "Bash(node index.js:*)",
+      "Bash(USE_MOCK_REPOSITORY=true node:*)",
+      "mcp__sequential-thinking__sequentialthinking"
     ]
   }
 }

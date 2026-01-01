@@ -562,8 +562,8 @@ class ScheduledSubscriptionWorkerUseCase {
     }
 
     // reCAPTCHA (재시도 불가)
+    // [v2.15 버그 수정] skipRetry 조건 제거 - 타임아웃/정체가 reCAPTCHA로 잘못 판정되던 문제 수정
     if (result.recaptchaDetected ||
-      result.skipRetry ||
       result.status === 'recaptcha_detected' ||
       result.error?.includes('reCAPTCHA') ||
       result.error?.includes('recaptcha')) {

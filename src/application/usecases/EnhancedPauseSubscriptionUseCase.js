@@ -343,7 +343,10 @@ class EnhancedPauseSubscriptionUseCase {
       }
       
       const currentStatus = await this.checkCurrentStatus(browser);
-      
+
+      // [v2.15] 상태 확인 후 스크린샷
+      await this.captureStepScreenshot('01_status_check', `상태확인: ${currentStatus.isPaused ? '이미중지' : '활성'}`);
+
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.endStep({
           isPaused: currentStatus.isPaused,
@@ -681,12 +684,22 @@ class EnhancedPauseSubscriptionUseCase {
     // SessionLogService 세션 종료 (스크린샷 + 로그 통합 관리)
     if (this.sessionLogService?.hasActiveSession()) {
       const sessionResult = result.success ? 'success' : 'error';
+      // v2.15: 결과 타입 구분 (신규성공 vs 이미완료)
+      let resultType = null;
+      if (result.success) {
+        if (result.status === 'already_paused') {
+          resultType = 'already_completed';
+        } else if (result.status === 'paused') {
+          resultType = 'newly_completed';
+        }
+      }
       this.sessionLogService.endSession(sessionResult, {
         nextBillingDate: result.nextBillingDate,
         error: result.error,
         errorType: result.errorType || (result.status === 'subscription_expired' ? 'expired' : 'unknown'),
         errorStep: result.status,
-        language: this.currentLanguage
+        language: this.currentLanguage,
+        resultType
       });
     }
 
@@ -2217,7 +2230,12 @@ class EnhancedPauseSubscriptionUseCase {
         this.log(`일시중지 버튼 클릭 시도 ${attempts}/${maxAttempts}`, 'info');
         
         pauseClicked = await this.clickPauseButton();
-        
+
+        // [v2.15] Pause 버튼 클릭 후 스크린샷
+        if (pauseClicked) {
+          await this.captureStepScreenshot('02_pause_click', 'Pause 버튼 클릭');
+        }
+
         if (!pauseClicked && attempts < maxAttempts) {
           this.log('일시중지 버튼을 찾지 못함, 다시 시도...', 'warning');
           
@@ -2233,6 +2251,10 @@ class EnhancedPauseSubscriptionUseCase {
 
       // 2. 팝업 확인 및 날짜 추출
       const popupResult = await this.confirmPauseInPopup();
+
+      // [v2.15] 팝업 확인 후 스크린샷
+      await this.captureStepScreenshot('03_popup', `팝업확인: ${popupResult.confirmed ? '성공' : '실패'}`);
+
       if (!popupResult.confirmed) {
         // 팝업 없이 이미 일시중지된 상태인지 확인
         const isAlreadyPaused = await this.checkCurrentStatus(browser);
@@ -2250,6 +2272,10 @@ class EnhancedPauseSubscriptionUseCase {
 
       // 3. 최종 상태 확인
       const finalStatus = await this.verifyPauseSuccess();
+
+      // [v2.15] 최종 검증 후 스크린샷
+      await this.captureStepScreenshot('04_verify', `검증: ${finalStatus.success ? '성공' : '실패'}`);
+
       if (finalStatus.success) {
         result.success = true;
         
@@ -3546,6 +3572,21 @@ class EnhancedPauseSubscriptionUseCase {
       }
     } catch (error) {
       this.log(`Sheets 업데이트 오류: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * 단계별 스크린샷 촬영 (v2.15)
+   * @param {string} step - 단계명 (예: '01_navigation', '02_status_check')
+   * @param {string} description - 설명
+   */
+  async captureStepScreenshot(step, description) {
+    if (this.sessionLogService?.hasActiveSession() && this.page) {
+      try {
+        await this.sessionLogService.capture(this.page, step, description);
+      } catch (e) {
+        this.log(`스크린샷 촬영 실패 (${step}): ${e.message}`, 'debug');
+      }
     }
   }
 

@@ -659,59 +659,50 @@ class EnhancedDateParsingService {
   }
 
   /**
-   * 년도가 없는 날짜에 대해 가장 적절한 년도를 계산
-   * 재개 컨텍스트: 오늘 날짜는 올해로, 과거 날짜는 내년으로
-   * 일시정지 컨텍스트: 오늘 날짜도 내년으로 처리
+   * [v2.16] 년도가 없는 날짜에 대해 가장 가까운 년도를 계산
+   * 모든 컨텍스트에서 오늘 기준 더 가까운 연도를 선택
    *
    * @param {number} month - 월 (1-12)
    * @param {number} day - 일 (1-31)
-   * @param {string} context - 컨텍스트 ('재개', '일시정지', 'resume', 'pause', 'nextBilling')
+   * @param {string} context - 컨텍스트 (참고용, 로깅에만 사용)
    * @returns {number} - 계산된 년도
    */
   calculateYearWithContext(month, day, context = 'pause') {
     const now = new Date();
     const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1; // 0-based를 1-based로 변환
-    const currentDay = now.getDate();
 
-    // 날짜를 숫자로 변환하여 비교 (MMDD 형식)
-    const inputDate = month * 100 + day;
-    const todayDate = currentMonth * 100 + currentDay;
+    // 올해와 내년 날짜 생성
+    const thisYearDate = new Date(currentYear, month - 1, day);
+    const nextYearDate = new Date(currentYear + 1, month - 1, day);
+    const lastYearDate = new Date(currentYear - 1, month - 1, day);
 
-    // 컨텍스트에 따른 날짜 계산
-    const isResumeContext = context === '재개' || context === 'resume' || context === 'nextBilling';
+    // 오늘과의 거리 계산 (절대값, 밀리초)
+    const distanceThisYear = Math.abs(thisYearDate - now);
+    const distanceNextYear = Math.abs(nextYearDate - now);
+    const distanceLastYear = Math.abs(lastYearDate - now);
 
-    if (isResumeContext) {
-      // 재개/다음 결제일 컨텍스트: 오늘 날짜도 올해로
+    // 가장 가까운 연도 선택
+    let selectedYear = currentYear;
+    let minDistance = distanceThisYear;
+    let label = '올해';
 
-      // 케이스 1: 오늘과 같은 날짜 -> 올해
-      if (inputDate === todayDate) {
-        if (this.debugEnabled) console.log(chalk.gray(`      → ✅ [재개] 오늘 날짜 (${month}/${day}) -> ${currentYear}년`));
-        return currentYear;
-      }
-
-      // 케이스 2: 오늘보다 이전 날짜 -> 내년
-      if (inputDate < todayDate) {
-        if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [재개] 과거 날짜 (${month}/${day} < ${currentMonth}/${currentDay}) -> ${currentYear + 1}년`));
-        return currentYear + 1;
-      }
-
-      // 케이스 3: 오늘보다 이후 날짜 -> 올해
-      if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [재개] 미래 날짜 (${month}/${day} > ${currentMonth}/${currentDay}) -> ${currentYear}년`));
-      return currentYear;
-    } else {
-      // 일시정지 컨텍스트: 기존 로직 (오늘 날짜는 내년으로)
-
-      // 과거 또는 오늘 날짜 -> 내년
-      if (inputDate <= todayDate) {
-        if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [일시정지] 과거/오늘 날짜 (${month}/${day}) -> ${currentYear + 1}년`));
-        return currentYear + 1;
-      }
-
-      // 미래 날짜 -> 올해
-      if (this.debugEnabled) console.log(chalk.gray(`      → 📅 [일시정지] 미래 날짜 (${month}/${day}) -> ${currentYear}년`));
-      return currentYear;
+    if (distanceNextYear < minDistance) {
+      selectedYear = currentYear + 1;
+      minDistance = distanceNextYear;
+      label = '내년';
     }
+
+    if (distanceLastYear < minDistance) {
+      selectedYear = currentYear - 1;
+      label = '작년';
+    }
+
+    if (this.debugEnabled) {
+      const daysDistance = Math.round(minDistance / (1000 * 60 * 60 * 24));
+      console.log(chalk.gray(`      → 📅 [${context}] ${month}/${day} → ${selectedYear}년 (${label}, ${daysDistance}일 차이)`));
+    }
+
+    return selectedYear;
   }
 
   /**

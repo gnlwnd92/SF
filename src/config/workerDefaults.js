@@ -14,7 +14,7 @@ module.exports = {
   checkIntervalSeconds: 60,   // 체크 간격 (초)
 
   // 재시도 설정
-  maxRetryCount: 3,           // 최대 재시도 횟수
+  maxRetryCount: 10,          // 최대 재시도 횟수
 
   // [v2.14] 결제 미완료 재시도 설정 (시간 기반)
   paymentPendingMaxHours: 24,        // 최대 대기 시간 (시간)

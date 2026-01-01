@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
-**버전**: v2.14 (2025-12-29)
+**버전**: v2.15 (2025-12-29)
 
 ## Core Commands
 
@@ -300,7 +300,7 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
   resumeMinutesBefore: 30,    // 결제재개: 결제 전 30분
   pauseMinutesAfter: 10,      // 일시중지: 결제 후 10분
   checkIntervalSeconds: 60,   // 체크 간격 60초
-  maxRetryCount: 3,           // 최대 재시도 3회
+  maxRetryCount: 10,          // 최대 재시도 10회
   humanLikeMotion: true,      // 휴먼라이크 인터랙션
 
   // [v2.14] 결제 미완료 재시도 설정
@@ -308,6 +308,27 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
   paymentPendingRetryMinutes: 30    // 재시도 간격 (분)
 }
 ```
+
+**lockExpiryMinutes 설정** (`src/container.js`에서 설정):
+```javascript
+workerLockService: asFunction(() => {
+  return new WorkerLockService({
+    lockExpiryMinutes: 15  // 좀비 잠금 만료 시간 (container.js에서 설정)
+  });
+})
+```
+
+### 분산 잠금 메커니즘 (WorkerLockService)
+
+**J열 잠금 형식**: `작업중:WORKER-DESK-123456:03:54`
+
+| 시나리오 | 잠금 해제 |
+|----------|-----------|
+| 정상 완료 | ✅ 즉시 (updateIntegratedWorkerOnSuccess) |
+| Ctrl+C | ✅ 즉시 (SIGINT 핸들러) |
+| 비정상 종료 | ❌ 15분 후 자동 만료 |
+
+**주의**: 프로세스 크래시, `taskkill /f`, PC 전원 꺼짐 시 최대 15분간 해당 계정 처리 불가
 
 ### 결제 미완료 감지 시스템 (v2.14)
 
@@ -326,6 +347,19 @@ DEBUG_STARTUP=false              # 시작 시 로그 출력
 2. N열 최초 설정 → O열에 30분 후 시각 기록
 3. `filterPaymentPendingRetryTargets()`로 재시도 대상 필터링
 4. 24시간 초과 시 '수동체크-결제지연' 상태로 전환
+
+**H열 결과 기록 형식**:
+```
+⏳ 결제미완료 | 결제일 불일치 | 재시도 04:24 | 경과 0.5h
+```
+
+**시나리오별 N/O열 처리**:
+| 시나리오 | N열 | O열 | 비고 |
+|----------|-----|-----|------|
+| 최초 감지 | 설정 | 30분 후 시각 | `handlePaymentPending()` |
+| 재시도 성공 | 초기화 | 초기화 | `clearIntegratedWorkerPendingColumns()` |
+| 재시도 실패 | 유지 | 30분 후 갱신 | 24시간 내 반복 |
+| 24시간 초과 | 유지 | 초기화 | '수동체크-결제지연' 상태 |
 
 **중요**: `filterPauseTargets()`에서 `pendingRetryAt`이 있는 작업은 반드시 제외해야 함
 
@@ -385,7 +419,13 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 | `logs/terminal/` | 터미널 로그 (JSON, 48시간) |
 | `logs/sessions/` | 세션 로그 |
 | `logs/errors/` | 에러 로그 |
+| `logs/screenshots/{날짜}/{이메일}/{시각}_{작업}/` | 세션별 스크린샷 + log.txt |
 | `screenshots/debug/` | 디버그 스크린샷 |
+
+**세션 로그 주의사항**:
+- 비정상 종료(Ctrl+C, 크래시) 시 스크린샷/meta.json이 저장되지 않을 수 있음
+- `log.txt` 파일로 진행 상태 확인 가능 (마지막 기록된 단계까지만)
+- 작업 성공 여부는 Google Sheets '통합워커' 시트 H열(결과) 확인 권장
 
 ## 코드 수정 시 체크리스트
 
