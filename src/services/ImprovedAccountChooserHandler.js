@@ -638,43 +638,9 @@ class ImprovedAccountChooserHandler {
         // 여러 클릭 방법 시도
         let clicked = false;
 
-        // 방법 1: evaluate로 직접 클릭 (가장 확실함)
-        try {
-          this.logger.info('🖱️ 방법 1: JavaScript 직접 클릭');
-          await this.page.evaluate(() => {
-            const target = document.querySelector('[data-account-click-target="true"]');
-            if (target) {
-              console.log('✅ 클릭 대상 요소 발견:', target.tagName, target.className);
-              target.click();
-              // 여러 이벤트 발생
-              const events = ['mousedown', 'mouseup', 'click'];
-              events.forEach(eventType => {
-                const event = new MouseEvent(eventType, {
-                  view: window,
-                  bubbles: true,
-                  cancelable: true
-                });
-                target.dispatchEvent(event);
-              });
-            }
-          });
-
-          await this.randomDelay(2000, 3000);
-
-          // 페이지 변화 확인
-          const currentUrl = this.page.url();
-          if (currentUrl !== originalUrl) {
-            this.logger.info('✅ JavaScript 클릭 성공 - URL 변경됨');
-            clicked = true;
-            return { success: true, navigated: true };
-          }
-        } catch (e) {
-          this.logger.warn(`JavaScript 클릭 실패: ${e.message}`);
-        }
-
-        // 방법 2: Puppeteer 좌표 클릭
-        if (!clicked && attempt === 1) {
-          this.logger.info('🖱️ 방법 2: Puppeteer 좌표 클릭');
+        // 방법 1: Puppeteer 좌표 클릭 (더 안정적)
+        if (attempt === 1) {
+          this.logger.info('🖱️ 방법 1: Puppeteer 좌표 클릭');
 
           // 마우스를 천천히 이동 (조심스럽게 조준)
           await this.moveMouseNaturally(accountInfo.x, accountInfo.y, 'slow');
@@ -698,9 +664,45 @@ class ImprovedAccountChooserHandler {
           // 실패 시 좌절감 표현 (마우스 움직임)
           await this.expressfrustration(accountInfo.x, accountInfo.y);
         }
-        
+
+        // 방법 2: JavaScript 직접 클릭 (폴백)
+        if (!clicked) {
+          try {
+            this.logger.info('🖱️ 방법 2: JavaScript 직접 클릭');
+            await this.page.evaluate(() => {
+              const target = document.querySelector('[data-account-click-target="true"]');
+              if (target) {
+                console.log('✅ 클릭 대상 요소 발견:', target.tagName, target.className);
+                target.click();
+                // 여러 이벤트 발생
+                const events = ['mousedown', 'mouseup', 'click'];
+                events.forEach(eventType => {
+                  const event = new MouseEvent(eventType, {
+                    view: window,
+                    bubbles: true,
+                    cancelable: true
+                  });
+                  target.dispatchEvent(event);
+                });
+              }
+            });
+
+            await this.randomDelay(2000, 3000);
+
+            // 페이지 변화 확인
+            const currentUrl = this.page.url();
+            if (currentUrl !== originalUrl) {
+              this.logger.info('✅ JavaScript 클릭 성공 - URL 변경됨');
+              clicked = true;
+              return { success: true, navigated: true };
+            }
+          } catch (e) {
+            this.logger.warn(`JavaScript 클릭 실패: ${e.message}`);
+          }
+        }
+
         // 두 번째 시도: 더 적극적인 클릭
-        else if (attempt === 2) {
+        if (attempt === 2) {
           this.logger.info('🖱️ 더 강하게 클릭 시도...');
           
           // 빠르게 이동 (조급함)
@@ -719,9 +721,9 @@ class ImprovedAccountChooserHandler {
           // 더 큰 좌절감
           await this.expressfrustration(accountInfo.x, accountInfo.y, 'medium');
         }
-        
+
         // 세 번째 시도: 다양한 방법 시도
-        else if (attempt === 3) {
+        if (attempt === 3) {
           this.logger.info('🖱️ 마지막 시도 - 다양한 클릭 패턴...');
           
           // 전략 1: 더블클릭
