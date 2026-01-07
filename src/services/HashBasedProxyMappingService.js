@@ -36,11 +36,21 @@ class HashBasedProxyMappingService {
    * 계정에 할당된 프록시 반환 (결정론적)
    * 동일 accountId는 항상 동일한 프록시를 반환
    *
+   * [v2.20] retryCount 기반 프록시 우회:
+   * - retryCount >= proxyRetryThreshold (기본 1) 이면 다른 프록시 사용
+   *
+   * [v2.24] 재시도 시 완전 랜덤 프록시 선택:
+   * - 첫 시도(retryCount=0): 해시 기반 고정 프록시
+   * - 재시도(retryCount>=threshold): 완전 랜덤 프록시 (기존 해시+오프셋 방식 폐기)
+   * - 죽은 프록시에 걸려도 다음 재시도에서 다른 프록시로 빠르게 우회
+   *
    * @param {string} accountId - 이메일 또는 프로필ID
    * @param {string} country - 국가 코드 ('kr', 'us' 등)
+   * @param {number} retryCount - 재시도 횟수 (기본 0)
+   * @param {number} proxyRetryThreshold - 프록시 우회 임계값 (기본 1)
    * @returns {Promise<Object>} AdsPower 프록시 설정 객체
    */
-  async getProxyForAccount(accountId, country = 'kr') {
+  async getProxyForAccount(accountId, country = 'kr', retryCount = 0, proxyRetryThreshold = 1) {
     if (!accountId) {
       throw new Error('accountId가 필요합니다');
     }
@@ -56,12 +66,38 @@ class HashBasedProxyMappingService {
       .update(accountId.toLowerCase().trim())
       .digest('hex');
 
-    // 해시의 첫 8자를 16진수로 변환하여 인덱스 계산
-    const index = parseInt(hash.substring(0, 8), 16) % proxies.length;
+    // 해시의 첫 8자를 16진수로 변환하여 기본 인덱스 계산
+    const baseIndex = parseInt(hash.substring(0, 8), 16) % proxies.length;
+
+    let index;
+    let isRandom = false;
+
+    // [v2.24] 재시도 시 완전 랜덤 프록시 선택
+    if (retryCount >= proxyRetryThreshold && proxyRetryThreshold > 0) {
+      // 기존 해시 인덱스를 제외한 랜덤 선택 (가능하면)
+      if (proxies.length > 1) {
+        let randomIndex;
+        do {
+          randomIndex = Math.floor(Math.random() * proxies.length);
+        } while (randomIndex === baseIndex && proxies.length > 1);
+        index = randomIndex;
+      } else {
+        index = 0;
+      }
+      isRandom = true;
+    } else {
+      // 첫 시도: 해시 기반 고정 프록시
+      index = baseIndex;
+    }
 
     const proxy = proxies[index];
 
-    this._log('info', `[HashProxyMapper] ${this.maskEmail(accountId)} → ${proxy.id} (index ${index}/${proxies.length})`);
+    // 로그 출력
+    if (isRandom) {
+      this._log('info', `[HashProxyMapper] ${this.maskEmail(accountId)} → ${proxy.id} (🎲 랜덤, 재시도 ${retryCount}회)`);
+    } else {
+      this._log('info', `[HashProxyMapper] ${this.maskEmail(accountId)} → ${proxy.id} (index ${index}/${proxies.length})`);
+    }
 
     return this.formatForAdsPower(proxy);
   }
@@ -88,9 +124,12 @@ class HashBasedProxyMappingService {
     const proxies = await this.proxySheetRepository.getProxiesByCountry(country);
 
     // 활성 프록시만 필터링
-    // 조건: 상태가 '비활성'이 아니고, 연속실패횟수가 3 미만
+    // [v2.23] 조건:
+    // - 상태가 'Active' 또는 '활성' (비활성화/비활성 제외)
+    // - 연속실패횟수 < 3 (안전망 - 2회 실패 시 자동 비활성화되므로 보통 도달 안함)
+    // - 호스트/포트 필수
     const activeProxies = proxies.filter(p =>
-      p.상태 !== '비활성' &&
+      (p.상태 === 'Active' || p.상태 === '활성') &&
       (parseInt(p.연속실패횟수) || 0) < 3 &&
       p.호스트 &&  // 호스트가 있어야 함
       p.포트       // 포트가 있어야 함
@@ -131,11 +170,16 @@ class HashBasedProxyMappingService {
   /**
    * 특정 계정의 프록시 매핑 정보 조회 (디버깅용)
    *
+   * [v2.20] retryCount 기반 프록시 우회 정보 포함
+   * [v2.24] 재시도 시 랜덤 프록시 선택 반영
+   *
    * @param {string} accountId - 계정 ID
    * @param {string} country - 국가 코드
+   * @param {number} retryCount - 재시도 횟수 (기본 0)
+   * @param {number} proxyRetryThreshold - 프록시 우회 임계값 (기본 1)
    * @returns {Promise<Object>} 매핑 정보
    */
-  async getMappingInfo(accountId, country = 'kr') {
+  async getMappingInfo(accountId, country = 'kr', retryCount = 0, proxyRetryThreshold = 1) {
     const proxies = await this.getActiveProxies(country);
 
     if (proxies.length === 0) {
@@ -146,19 +190,27 @@ class HashBasedProxyMappingService {
       .update(accountId.toLowerCase().trim())
       .digest('hex');
 
-    const index = parseInt(hash.substring(0, 8), 16) % proxies.length;
-    const proxy = proxies[index];
+    const baseIndex = parseInt(hash.substring(0, 8), 16) % proxies.length;
+
+    // [v2.24] 재시도 시 랜덤이므로 실제 인덱스는 getMappingInfo에서 알 수 없음
+    const isRandom = retryCount >= proxyRetryThreshold && proxyRetryThreshold > 0;
+    const index = isRandom ? '(랜덤)' : baseIndex;
+    const proxy = isRandom ? null : proxies[baseIndex];
 
     return {
       accountId: this.maskEmail(accountId),
       hashPrefix: hash.substring(0, 8),
       hashFull: hash,
+      baseIndex,
+      isRandom,
       proxyIndex: index,
       totalProxies: proxies.length,
-      proxyId: proxy.id,
-      proxyHost: proxy.호스트,
-      proxyPort: proxy.포트,
-      proxyCountry: proxy.국가
+      proxyId: isRandom ? '(랜덤 선택됨)' : proxy.id,
+      proxyHost: isRandom ? '(랜덤 선택됨)' : proxy.호스트,
+      proxyPort: isRandom ? '(랜덤 선택됨)' : proxy.포트,
+      proxyCountry: country.toUpperCase(),
+      retryCount,
+      proxyRetryThreshold
     };
   }
 
@@ -198,17 +250,27 @@ class HashBasedProxyMappingService {
 
   /**
    * 프록시 사용 실패 기록
+   * [v2.23] 2회 이상 연속 실패 시 자동 비활성화
    *
    * @param {string} proxyId - 프록시 ID
+   * @returns {Promise<{success: boolean, newCount: number, deactivated: boolean}>}
    */
   async recordFailure(proxyId) {
     try {
-      await this.proxySheetRepository.incrementFailureCount(proxyId);
+      const result = await this.proxySheetRepository.incrementFailureCount(proxyId);
+
+      // 비활성화된 경우 로그 출력
+      if (result.deactivated) {
+        this._log('warn', `[HashProxyMapper] ⚠️ 프록시 ${proxyId} 비활성화됨 (${result.newCount}회 연속 실패)`);
+      }
 
       // 캐시 무효화 (실패한 프록시가 비활성화될 수 있으므로)
       this.invalidateCache();
+
+      return result;
     } catch (error) {
       this._log('warn', `[HashProxyMapper] 실패 기록 실패: ${error.message}`);
+      return { success: false, newCount: 0, deactivated: false };
     }
   }
 

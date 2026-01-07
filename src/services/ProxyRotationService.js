@@ -7,8 +7,7 @@
 
 const chalk = require('chalk');
 const axios = require('axios');
-// 공유 프록시 풀 가져오기
-const { getRandomProxy, getProxyPoolStatus } = require('../infrastructure/config/proxy-pools');
+// [v2.23] proxy-pools.js 하드코딩 제거 - hashProxyMapper 의존성 주입으로 변경
 // 포트 자동 감지 유틸리티
 const { getApiUrl } = require('../utils/adsPowerPortDetector');
 
@@ -18,19 +17,20 @@ class ProxyRotationService {
     this.apiUrl = null; // 초기화 시 설정됨
     this.initialized = false;
 
+    // [v2.23] hashProxyMapper 의존성 주입
+    this.hashProxyMapper = config.hashProxyMapper || null;
+
     this.config = {
       debugMode: config.debugMode || false,
       ...config
     };
-    
-    // 프록시 풀 상태 확인
-    const proxyStatus = getProxyPoolStatus();
+
+    // [v2.23] 프록시 풀 상태는 hashProxyMapper 초기화 후 확인 (비동기)
     if (this.config.debugMode) {
       console.log(chalk.cyan('🌐 ProxyRotationService 초기화'));
-      console.log(chalk.gray(`  • 한국 프록시: ${proxyStatus.kr.total}개 (${proxyStatus.kr.host})`));
-      console.log(chalk.gray(`  • 미국 프록시: ${proxyStatus.us.total}개 (${proxyStatus.us.host})`));
+      console.log(chalk.gray(`  • 프록시 소스: Google Sheets '프록시' 탭`));
     }
-    
+
     // 현재 사용 중인 프록시
     this.currentProxy = null;
     this.currentCountry = null;
@@ -60,9 +60,10 @@ class ProxyRotationService {
   }
 
   /**
-   * 국가별 프록시 가져오기 (공유 프록시 풀 사용)
+   * 국가별 프록시 가져오기 (Google Sheets '프록시' 탭 사용)
+   * [v2.23] hashProxyMapper.getRandomProxyFromSheet() 사용으로 변경
    */
-  getProxyForCountry(country) {
+  async getProxyForCountry(country) {
     // 국가 코드 매핑
     const countryMap = {
       'korea': 'kr',
@@ -73,22 +74,32 @@ class ProxyRotationService {
       'japan': 'jp',
       'jp': 'jp'
     };
-    
+
     const countryCode = countryMap[country.toLowerCase()];
-    
+
     if (!countryCode) {
       this.log(`⚠️ ${country} 프록시를 찾을 수 없습니다`, 'warning');
       return null;
     }
-    
-    // proxy-pools.js의 getRandomProxy 사용
-    const proxyConfig = getRandomProxy(countryCode);
-    
-    if (this.config.debugMode) {
-      this.log(`🌐 선택된 ${country} 프록시: ${proxyConfig.proxy_host}:${proxyConfig.proxy_port}`, 'info');
+
+    // [v2.23] hashProxyMapper 사용 - 하드코딩 제거
+    if (!this.hashProxyMapper) {
+      throw new Error('hashProxyMapper가 주입되지 않았습니다. container.js 설정을 확인하세요.');
     }
-    
-    return proxyConfig;
+
+    try {
+      const result = await this.hashProxyMapper.getRandomProxyFromSheet(countryCode);
+      const proxyConfig = result.proxy;
+
+      if (this.config.debugMode) {
+        this.log(`🌐 선택된 ${country} 프록시: ${proxyConfig.proxy_host}:${proxyConfig.proxy_port} (ID: ${result.proxyId})`, 'info');
+      }
+
+      return proxyConfig;
+    } catch (error) {
+      this.log(`❌ ${country} 프록시 조회 실패: ${error.message}`, 'error');
+      throw new Error(`프록시 시트 접근 실패: ${error.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+    }
   }
 
   /**
@@ -101,7 +112,8 @@ class ProxyRotationService {
     }
 
     try {
-      const proxyConfig = this.getProxyForCountry(country);
+      // [v2.23] getProxyForCountry()가 async로 변경됨
+      const proxyConfig = await this.getProxyForCountry(country);
 
       if (!proxyConfig) {
         throw new Error(`${country} 프록시를 찾을 수 없습니다`);

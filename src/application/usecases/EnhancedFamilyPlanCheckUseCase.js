@@ -17,8 +17,7 @@ const axios = require('axios');
 const ScreenshotDebugService = require('../../services/ScreenshotDebugService');
 // 개선된 인증 서비스 - 복구 이메일 선택 문제 해결 버전
 const ImprovedAuthenticationService = require('../../services/ImprovedAuthenticationService-enhanced');
-// 프록시 풀 설정
-const { getRandomProxy, getProxyPoolStatus } = require('../../infrastructure/config/proxy-pools');
+// [v2.23] proxy-pools.js 하드코딩 제거 - 모든 프록시는 '프록시' 시트에서 조회
 // SunBrowser 프로필 생성기 추가
 const SunbrowserProfileCreator = require('../../infrastructure/adapters/SunbrowserProfileCreator');
 // 포트 자동 감지 유틸리티
@@ -32,6 +31,7 @@ class EnhancedFamilyPlanCheckUseCase {
     familyPlanSheetRepository,
     familyPlanDetectionService,
     authService,
+    hashProxyMapper,  // 프록시 시트에서 프록시 가져오기
     logger,
     config
   }) {
@@ -40,6 +40,7 @@ class EnhancedFamilyPlanCheckUseCase {
     this.sheets = googleSheetsRepository;
     this.familySheets = familyPlanSheetRepository;
     this.detector = familyPlanDetectionService;
+    this.hashProxyMapper = hashProxyMapper;  // 프록시 시트 서비스
     this.logger = logger;
     this.config = config;
     
@@ -297,10 +298,25 @@ class EnhancedFamilyPlanCheckUseCase {
       
       // 5. 미국 프록시로 전환 (가족요금제 확인용)
       console.log(chalk.cyan('🌍 미국 프록시로 전환 중...'));
-      
-      // 미국 프록시 랜덤 선택
-      const usProxy = getRandomProxy('us');
-      console.log(chalk.cyan('🇺🇸 미국 프록시 사용:', `${usProxy.proxy_host}:${usProxy.proxy_port}`));
+
+      // 미국 프록시 선택 (시트 → 하드코딩 폴백)
+      let usProxy;
+      let usProxyId = 'hardcoded_random';
+
+      try {
+        if (this.hashProxyMapper) {
+          const result = await this.hashProxyMapper.getRandomProxyFromSheet('us');
+          usProxy = result.proxy;
+          usProxyId = result.proxyId;
+          console.log(chalk.cyan('🇺🇸 프록시 시트에서 선택:', `${usProxy.proxy_host}:${usProxy.proxy_port} (${usProxyId})`));
+        } else {
+          throw new Error('hashProxyMapper not available');
+        }
+      } catch (proxyError) {
+        // [v2.23] 하드코딩 폴백 제거 - 시트 접근 실패 시 에러 throw
+        console.log(chalk.red(`❌ 미국 프록시 조회 실패: ${proxyError.message}`));
+        throw new Error(`프록시 시트 접근 실패: ${proxyError.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+      }
       
       // AdsPower API로 프록시 변경
       await this.adsPower.updateProfile(profileId, {
@@ -589,11 +605,28 @@ class EnhancedFamilyPlanCheckUseCase {
           }
         }
         
-        // 한국 프록시로 재전환 (프로협 유지를 위해)
+        // 한국 프록시로 재전환 (프로필 유지를 위해)
         console.log(chalk.cyan('🔄 한국 프록시로 재전환...'));
-        const newKrProxy = getRandomProxy('kr');
-        console.log(chalk.cyan('🇰🇷 새 한국 프록시:', `${newKrProxy.proxy_host}:${newKrProxy.proxy_port}`));
-        
+
+        // 한국 프록시 선택 (시트 → 하드코딩 폴백)
+        let newKrProxy;
+        let newKrProxyId = 'hardcoded_random';
+
+        try {
+          if (this.hashProxyMapper) {
+            const result = await this.hashProxyMapper.getRandomProxyFromSheet('kr');
+            newKrProxy = result.proxy;
+            newKrProxyId = result.proxyId;
+            console.log(chalk.cyan('🇰🇷 프록시 시트에서 선택:', `${newKrProxy.proxy_host}:${newKrProxy.proxy_port} (${newKrProxyId})`));
+          } else {
+            throw new Error('hashProxyMapper not available');
+          }
+        } catch (proxyError) {
+          // [v2.23] 하드코딩 폴백 제거 - 시트 접근 실패 시 에러 throw
+          console.log(chalk.red(`❌ 한국 프록시 조회 실패: ${proxyError.message}`));
+          throw new Error(`프록시 시트 접근 실패: ${proxyError.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+        }
+
         await this.adsPower.updateProfile(profileId, {
           user_proxy_config: newKrProxy
         });
@@ -684,10 +717,25 @@ class EnhancedFamilyPlanCheckUseCase {
    * Windows 11 프로필 생성 (SunBrowser + 요구사항 적용)
    */
   async createWindows11Profile(name, account) {
-    // 한국 프록시 랜덤 선택
-    const krProxy = getRandomProxy('kr');
-    console.log(chalk.cyan('🇰🇷 한국 프록시 사용:', `${krProxy.proxy_host}:${krProxy.proxy_port}`));
-    
+    // 한국 프록시 선택 (시트 → 하드코딩 폴백)
+    let krProxy;
+    let proxyId = 'hardcoded_random';
+
+    try {
+      if (this.hashProxyMapper) {
+        const result = await this.hashProxyMapper.getRandomProxyFromSheet('kr');
+        krProxy = result.proxy;
+        proxyId = result.proxyId;
+        console.log(chalk.cyan('🇰🇷 프록시 시트에서 선택:', `${krProxy.proxy_host}:${krProxy.proxy_port} (${proxyId})`));
+      } else {
+        throw new Error('hashProxyMapper not available');
+      }
+    } catch (proxyError) {
+      // [v2.23] 하드코딩 폴백 제거 - 시트 접근 실패 시 에러 throw
+      console.log(chalk.red(`❌ 프록시 조회 실패: ${proxyError.message}`));
+      throw new Error(`프록시 시트 접근 실패: ${proxyError.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+    }
+
     try {
       // SunbrowserProfileCreator를 사용하여 프로필 생성
       // 이메일 사용

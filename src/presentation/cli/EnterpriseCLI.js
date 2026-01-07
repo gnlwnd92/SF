@@ -247,12 +247,26 @@ class EnterpriseCLI {
 
   /**
    * 헤더 표시
+   *
+   * [버전 업그레이드 시 수정 필요]
+   * - VERSION: 새 버전 번호
+   * - VERSION_DATE: 릴리즈 날짜
+   * - VERSION_DESC: 주요 변경사항 요약 (20자 이내 권장)
    */
   displayHeader() {
+    // ═══════════════════════════════════════════════════════════
+    // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
+    // ═══════════════════════════════════════════════════════════
+    const VERSION = 'v2.26';
+    const VERSION_DATE = '2026-01-08 KST';
+    const VERSION_DESC = '분산 워커 중복 방지 강화';
+    // ═══════════════════════════════════════════════════════════
+
     console.clear();
     console.log(chalk.cyan.bold('\n┌' + '─'.repeat(60) + '┐'));
-    console.log(chalk.cyan.bold('│') + chalk.white.bold('  🎯 Enterprise YouTube Automation  '.padEnd(60)) + chalk.cyan.bold('│'));
-    console.log(chalk.cyan.bold('│') + chalk.gray('       Clean Architecture Edition      '.padEnd(60)) + chalk.cyan.bold('│'));
+    console.log(chalk.cyan.bold('│') + chalk.white.bold('  🎯 YouTube Premium 구독 자동화 시스템'.padEnd(52)) + chalk.cyan.bold('│'));
+    console.log(chalk.cyan.bold('│') + chalk.yellow(`     ${VERSION}`) + chalk.gray(` (${VERSION_DATE}) - ${VERSION_DESC}`.padEnd(48)) + chalk.cyan.bold('│'));
+    console.log(chalk.cyan.bold('│') + chalk.gray('     AdsPower + Puppeteer | Clean Architecture'.padEnd(59)) + chalk.cyan.bold('│'));
     console.log(chalk.cyan.bold('└' + '─'.repeat(60) + '┘'));
     console.log();
   }
@@ -1692,7 +1706,7 @@ class EnterpriseCLI {
         // 번호인증 계정 제외하고 재시도할 계정 필터링
         let retryableTasks = results.failed.filter(item => 
           item.error !== '번호인증계정' && 
-          !item.error.includes('reCAPTCHA')
+          !(item.error?.includes('reCAPTCHA'))
         );
         
         if (retryableTasks.length > 0) {
@@ -1767,7 +1781,7 @@ class EnterpriseCLI {
                   console.log(chalk.green(`  ✔ 상태: ${retryResult.status}`));
                 } else {
                   this.spinner.fail(`${originalTask.googleId} 재시도 ${retryCount} 실패`);
-                  if (retryResult.error !== '번호인증계정' && !retryResult.error.includes('reCAPTCHA')) {
+                  if (retryResult.error !== '번호인증계정' && !(retryResult.error?.includes('reCAPTCHA'))) {
                     retryableTasks.push({ id: originalTask.googleId, error: retryResult.error });
                   }
                   const failedItem = results.failed.find(f => f.id === originalTask.googleId);
@@ -1816,7 +1830,7 @@ class EnterpriseCLI {
         // 이제 재시도는 자동으로 처리됨
         const retryableTasks = results.failed.filter(item =>
           item.error !== '번호인증계정' &&
-          !item.error.includes('reCAPTCHA')
+          !(item.error?.includes('reCAPTCHA'))
         );
 
         // 이전 수동 재시도 로직은 주석 처리 (자동 재시도로 대체됨)
@@ -2314,8 +2328,15 @@ class EnterpriseCLI {
               console.log(chalk.yellow(`  ⚠️ (재확인 후 실패 - 실제로 일시중지 필요)`));
             }
 
+            // [v2.22] 결제 미완료 상태 우선 처리 (통합워커 패턴)
+            if (result.status === 'payment_pending') {
+              console.log(chalk.yellow(`  ⏳ 결제 미완료: ${result.paymentPendingReason || '결제일 불일치'}`));
+              console.log(chalk.gray(`    → 결제 완료 후 통합워커에서 자동 처리됩니다`));
+              results.paymentPending = results.paymentPending || [];
+              results.paymentPending.push({ id: task.googleId, reason: result.paymentPendingReason });
+              // failed 배열에 추가하지 않음 → 자동 재시도 안함 (의도적)
             // v2.1: 결제 복구 성공 후 재확인 필요한 경우 - 재시도 대상에 포함
-            if (result.error === 'PAYMENT_RECOVERED_NEED_RECHECK' ||
+            } else if (result.error === 'PAYMENT_RECOVERED_NEED_RECHECK' ||
                 result.error?.includes('PAYMENT_RECOVERED')) {
               console.log(chalk.green(`  ✔ 결제 문제 발생 후 재결제 완료`));
               console.log(chalk.yellow(`  ⚠ 다시 확인 필요 - 즉시 재시도합니다`));
@@ -2362,7 +2383,7 @@ class EnterpriseCLI {
         // 번호인증 계정 제외하고 재시도할 계정 필터링
         let retryableTasks = results.failed.filter(item => 
           item.error !== '번호인증계정' && 
-          !item.error.includes('reCAPTCHA')
+          !(item.error?.includes('reCAPTCHA'))
         );
         
         if (retryableTasks.length > 0) {
@@ -2437,7 +2458,7 @@ class EnterpriseCLI {
                   console.log(chalk.green(`  ✔ 상태: ${retryResult.status}`));
                 } else {
                   this.spinner.fail(`${originalTask.googleId} 재시도 ${retryCount} 실패`);
-                  if (retryResult.error !== '번호인증계정' && !retryResult.error.includes('reCAPTCHA')) {
+                  if (retryResult.error !== '번호인증계정' && !(retryResult.error?.includes('reCAPTCHA'))) {
                     retryableTasks.push({ id: originalTask.googleId, error: retryResult.error });
                   }
                   const failedItem = results.failed.find(f => f.id === originalTask.googleId);
@@ -2486,7 +2507,7 @@ class EnterpriseCLI {
         // 이제 재시도는 자동으로 처리됨
         const retryableTasks = results.failed.filter(item =>
           item.error !== '번호인증계정' &&
-          !item.error.includes('reCAPTCHA')
+          !(item.error?.includes('reCAPTCHA'))
         );
 
         // 이전 수동 재시도 로직은 주석 처리 (자동 재시도로 대체됨)
@@ -3164,47 +3185,60 @@ class EnterpriseCLI {
    * - 일시중지: 현재시간 + N분 이전의 계정 처리
    * - 결제재개: 현재시간 - M분 이전의 계정 처리
    * - 분산 워커: J열 잠금으로 여러 PC에서 충돌 없이 작업
+   * - [v2.15] 설정값은 Google Sheets '설정' 탭에서 자동 참조
    */
   async scheduledWorker() {
     try {
-      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.0'));
+      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.15'));
       console.log(chalk.gray('─'.repeat(50)));
-      console.log(chalk.gray('  • 결제재개: 결제 전 M분에 "일시중지" → "결제중"'));
-      console.log(chalk.gray('  • 일시중지: 결제 후 N분에 "결제중" → "일시중지"'));
+
+      // [v2.15] SharedConfig에서 설정값 로드
+      const sharedConfig = this.container.resolve('sharedConfig');
+
+      // SharedConfig 초기화 (최초 1회)
+      if (!sharedConfig.isInitialized) {
+        console.log(chalk.gray('  ⏳ Google Sheets "설정" 탭 로드 중...'));
+        await sharedConfig.initialize();
+      }
+
+      // 현재 설정값 조회
+      const resumeMinutesBefore = sharedConfig.getResumeMinutesBefore();
+      const pauseMinutesAfter = sharedConfig.getPauseMinutesAfter();
+      const checkIntervalSeconds = sharedConfig.getCheckIntervalSeconds();
+      const maxRetryCount = sharedConfig.getMaxRetryCount();
+
+      // 설정값 표시 (Google Sheets '설정' 탭 기준)
+      console.log(chalk.cyan('  📋 현재 설정 (Google Sheets "설정" 탭 참조):'));
+      console.log(chalk.white(`     • 결제재개: 결제 전 ${chalk.yellow(resumeMinutesBefore)}분에 "일시중지" → "결제중"`));
+      console.log(chalk.white(`     • 일시중지: 결제 후 ${chalk.yellow(pauseMinutesAfter)}분에 "결제중" → "일시중지"`));
+      console.log(chalk.white(`     • 체크 간격: ${chalk.yellow(checkIntervalSeconds)}초`));
+      console.log(chalk.white(`     • 최대 재시도: ${chalk.yellow(maxRetryCount)}회`));
+      console.log(chalk.gray('─'.repeat(50)));
+      console.log(chalk.gray('  💡 설정 변경: Google Sheets "설정" 탭에서 수정'));
       console.log(chalk.gray('  • 분산 워커: 여러 PC에서 동시 실행 가능'));
       console.log(chalk.gray('  • 지속 실행: 새 대상 자동 감지'));
       console.log(chalk.gray('  • 참조 탭: 통합워커'));
       console.log(chalk.gray('─'.repeat(50)));
 
-      // 파라미터 입력 (기본값은 WORKER_DEFAULTS에서 가져옴)
-      const { resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, checkIntervalSeconds, continuous, debugMode } = await inquirer.prompt([
+      // 실행 옵션 입력 (윈도우 모드, 지속실행, 디버그 모드)
+      const { windowMode, continuous, debugMode } = await inquirer.prompt([
         {
-          type: 'number',
-          name: 'resumeMinutesBefore',
-          message: '결제재개 기준 (결제 전 M분):',
-          default: WORKER_DEFAULTS.resumeMinutesBefore,
-          validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
-        },
-        {
-          type: 'number',
-          name: 'pauseMinutesAfter',
-          message: '일시중지 기준 (결제 후 N분):',
-          default: WORKER_DEFAULTS.pauseMinutesAfter,
-          validate: (value) => value >= 1 ? true : '1 이상의 값을 입력하세요'
-        },
-        {
-          type: 'number',
-          name: 'maxRetryCount',
-          message: '최대 재시도 횟수:',
-          default: WORKER_DEFAULTS.maxRetryCount,
-          validate: (value) => value >= 1 && value <= 10 ? true : '1-10 사이의 값을 입력하세요'
-        },
-        {
-          type: 'number',
-          name: 'checkIntervalSeconds',
-          message: '체크 간격 (초):',
-          default: WORKER_DEFAULTS.checkIntervalSeconds,
-          validate: (value) => value >= 10 ? true : '10초 이상의 값을 입력하세요'
+          type: 'list',
+          name: 'windowMode',
+          message: '실행 모드 선택:',
+          choices: [
+            {
+              name: '🖥️  포커싱 모드 - 브라우저 창 확인하면서 작업 (권장)',
+              value: 'focus',
+              short: '포커싱'
+            },
+            {
+              name: '🔲 백그라운드 모드 - 다른 작업하면서 자동 실행',
+              value: 'background',
+              short: '백그라운드'
+            }
+          ],
+          default: 'focus'
         },
         {
           type: 'confirm',
@@ -3220,15 +3254,17 @@ class EnterpriseCLI {
         }
       ]);
 
-      // 확인
-      console.log(chalk.cyan('\n📋 설정 확인:'));
-      console.log(chalk.gray(`  • 결제재개: 결제 전 ${resumeMinutesBefore}분에 "일시중지" → "결제중"`));
-      console.log(chalk.gray(`  • 일시중지: 결제 후 ${pauseMinutesAfter}분에 "결제중" → "일시중지"`));
-      console.log(chalk.gray(`  • 최대 재시도: ${maxRetryCount}회`));
-      console.log(chalk.gray(`  • 체크 간격: ${checkIntervalSeconds}초`));
-      console.log(chalk.gray(`  • 지속 실행: ${continuous ? '켜짐' : '꺼짐'}`));
-      console.log(chalk.gray(`  • 디버그: ${debugMode ? '켜짐' : '꺼짐'}`));
+      // 백그라운드 모드 안내
+      if (windowMode === 'background') {
+        console.log(chalk.cyan('\n📋 백그라운드 모드 안내:'));
+        console.log(chalk.gray('  • CDP(Chrome DevTools Protocol)로 동작하여 포커스 없이 정상 작동'));
+        console.log(chalk.gray('  • 브라우저 창이 열려도 작업은 백그라운드에서 진행됩니다'));
+        console.log(chalk.gray('  • 다른 작업을 하셔도 자동화가 중단되지 않습니다'));
+        console.log(chalk.yellow('  ⚠️ 브라우저 창을 최소화하면 일부 렌더링 문제가 발생할 수 있습니다'));
+        console.log('');
+      }
 
+      // 최종 확인
       const { confirm } = await inquirer.prompt([
         {
           type: 'confirm',
@@ -3244,18 +3280,17 @@ class EnterpriseCLI {
         return;
       }
 
-      // UseCase 실행
-      console.log(chalk.green('\n🚀 시간체크 통합 워커 v2.0 시작...\n'));
+      // UseCase 실행 (설정값은 UseCase 내부에서 sharedConfig 참조)
+      const modeLabel = windowMode === 'background' ? '백그라운드' : '포커싱';
+      console.log(chalk.green(`\n🚀 시간체크 통합 워커 v2.25 시작... [${modeLabel} 모드]\n`));
 
       const scheduledWorkerUseCase = this.container.resolve('scheduledSubscriptionWorkerUseCase');
 
       const result = await scheduledWorkerUseCase.execute({
-        resumeMinutesBefore,
-        pauseMinutesAfter,
-        maxRetryCount,
-        checkIntervalSeconds,
         continuous,
-        debugMode
+        debugMode,
+        windowMode  // 포커싱/백그라운드 모드 전달
+        // 나머지 설정값은 UseCase에서 sharedConfig 통해 자동 참조
       });
 
       // 결과 표시

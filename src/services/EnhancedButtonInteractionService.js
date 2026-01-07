@@ -674,16 +674,18 @@ class EnhancedButtonInteractionService {
 
         // ========== 최종 만료 판정 ==========
         // 만료 조건:
-        // 1. Inactive Memberships 섹션 있음
+        // 1. Inactive Memberships 섹션 있음 + Resume 버튼 없음 (Resume 있으면 일시중지 상태)
         // 2. Benefits end + Renew 버튼 있고 Pause/Resume 버튼 없음
         // 3. 추가 만료 텍스트 있음
         const isExpiredByBenefitsEnd = hasBenefitsEnd && hasRenewButton && !hasPauseButton && !hasResumeButton;
-        const isExpired = hasInactive || isExpiredByBenefitsEnd || hasAdditionalExpiredText;
+        // [v2.18 fix] Inactive 섹션이 있어도 Resume 버튼이 있으면 일시중지 상태이므로 만료 아님
+        const isExpiredByInactive = hasInactive && !hasResumeButton;
+        const isExpired = isExpiredByInactive || isExpiredByBenefitsEnd || hasAdditionalExpiredText;
 
         // 판정 근거 생성
         let indicator = null;
-        if (hasInactive) {
-          indicator = 'Inactive Memberships section found';
+        if (isExpiredByInactive) {
+          indicator = 'Inactive Memberships section found (no Resume button)';
         } else if (isExpiredByBenefitsEnd) {
           indicator = `Benefits end detected: "${detectedBenefitsEndText}" + Renew button`;
         } else if (hasAdditionalExpiredText) {

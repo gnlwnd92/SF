@@ -34,6 +34,9 @@ class ImprovedAuthenticationService {
     this.loginCache = new Map();
     this.cacheTimeout = 5 * 60 * 1000; // 5분
 
+    // SessionLogService 주입 (v2.17 - 로그인 단계별 로깅)
+    this.sessionLogService = config.sessionLogService || null;
+
     // Anti-Captcha 서비스 초기화
     this.antiCaptchaService = new AntiCaptchaService({
       apiKey: config.antiCaptchaApiKey || process.env.ANTI_CAPTCHA_API_KEY,
@@ -46,6 +49,39 @@ class ImprovedAuthenticationService {
     this.cdpHelper = null;
 
     this.log('✅ ImprovedAuthenticationService 초기화 완료', 'success');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 로그인 단계별 스크린샷 헬퍼 (v2.17)
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 로그인 단계 스크린샷 촬영
+   * @param {Page} page - Puppeteer 페이지 객체
+   * @param {string} step - 단계 ID (예: '00_login_start')
+   * @param {string} description - 단계 설명 (예: '로그인 시작')
+   */
+  async captureLoginStep(page, step, description) {
+    if (!this.sessionLogService?.hasActiveSession?.()) {
+      return; // 활성 세션 없으면 무시
+    }
+    try {
+      await this.sessionLogService.capture(page, step, description);
+      this.log(`📸 [로그인] ${step}: ${description}`, 'debug');
+    } catch (error) {
+      this.log(`⚠️ 스크린샷 실패 (${step}): ${error.message}`, 'warning');
+      // 스크린샷 실패해도 작업 계속
+    }
+  }
+
+  /**
+   * 로그인 단계 로그 기록
+   * @param {string} message - 로그 메시지
+   */
+  writeLoginLog(message) {
+    if (this.sessionLogService?.hasActiveSession?.()) {
+      this.sessionLogService.writeLog(`[로그인] ${message}`);
+    }
   }
 
   /**
@@ -144,19 +180,26 @@ class ImprovedAuthenticationService {
     if (!credentials || !credentials.email) {
       throw new Error('자격 증명이 필요합니다');
     }
-    
+
     this.log(`🔐 로그인 시작: ${credentials.email}`, 'info');
     console.log(chalk.blue(`\n  [로그인 프로세스] ${credentials.email} 계정 로그인 시작`));
-    
+
+    // v2.17: 로그인 시작 로그 기록
+    this.writeLoginLog(`로그인 시작: ${credentials.email}`);
+
+    // v2.17: 00_login_start 스크린샷
+    await this.captureLoginStep(page, '00_login_start', '로그인 시작 (초기 페이지)');
+
     let attempts = 0;
     const maxAttempts = options.maxAttempts || this.config.maxLoginAttempts;
-    
+
     while (attempts < maxAttempts) {
       attempts++;
       this.log(`로그인 시도 ${attempts}/${maxAttempts}`, 'info');
       console.log(chalk.gray(`  로그인 시도 ${attempts}/${maxAttempts}`));
-      
-      // 로그인 시도 전 스크린샷
+      this.writeLoginLog(`로그인 시도 ${attempts}/${maxAttempts}`);
+
+      // 로그인 시도 전 스크린샷 (기존 debug 폴더용 유지)
       const timestamp = Date.now();
       try {
         const screenshotPath = `screenshots/debug/login-attempt-${attempts}-${timestamp}.png`;
@@ -165,32 +208,36 @@ class ImprovedAuthenticationService {
       } catch (e) {
         // 무시
       }
-      
+
       try {
         // 로그인 시도
         const result = await this.attemptLogin(page, credentials, options);
         
         if (result.success) {
           this.log('✅ 로그인 성공!', 'success');
-          
+          this.writeLoginLog('로그인 성공!');
+
+          // v2.17: 08_login_success 스크린샷
+          await this.captureLoginStep(page, '08_login_success', '로그인 성공 확인');
+
           // 세션 저장
           this.saveSession(credentials.email, {
             loginTime: new Date().toISOString(),
             profileId: options.profileId,
             success: true
           });
-          
+
           // 캐시 업데이트
           this.setCachedLoginStatus(options.profileId || 'default', {
             isLoggedIn: true,
             email: credentials.email,
             timestamp: Date.now()
           });
-          
-          return { 
-            success: true, 
+
+          return {
+            success: true,
             isLoggedIn: true,
-            email: credentials.email 
+            email: credentials.email
           };
         }
         
@@ -278,6 +325,12 @@ class ImprovedAuthenticationService {
         // 페이지 타입 확인
         const pageType = await this.detectPageType(page);
         this.log(`[단계 ${currentStep}] 페이지 타입: ${pageType}`, 'info');
+        this.writeLoginLog(`단계 ${currentStep}: 페이지 감지 - ${pageType}`);
+
+        // v2.17: 01_page_detect 스크린샷 (첫 단계에서만)
+        if (currentStep === 1) {
+          await this.captureLoginStep(page, '01_page_detect', `페이지 감지: ${pageType}`);
+        }
 
         // 페이지 타입에 따른 처리
         let result;
@@ -496,8 +549,17 @@ class ImprovedAuthenticationService {
 
           case 'account_chooser':
             console.log(chalk.yellow(`[ImprovedAuth] 📋 계정 선택 페이지 처리 중...`));
+            this.writeLoginLog('계정 선택 페이지');
+
+            // v2.17: 02_account_chooser 스크린샷
+            await this.captureLoginStep(page, '02_account_chooser', '계정 선택 페이지');
+
             result = await this.handleAccountChooserLogin(page, credentials, options);
             if (result && result.success) {
+              // v2.17: 03_account_selected 스크린샷
+              await this.captureLoginStep(page, '03_account_selected', '계정 선택 완료');
+              this.writeLoginLog('계정 선택 완료');
+
               // 계정 선택 성공 후 다음 단계로 이동
               await new Promise(r => setTimeout(r, this.config.waitTimes.pageLoad));
               continue;
@@ -536,8 +598,17 @@ class ImprovedAuthenticationService {
 
           case 'password_input':
             console.log(chalk.blue(`[ImprovedAuth] 🔒 비밀번호 입력 페이지`));
+            this.writeLoginLog('비밀번호 입력 페이지');
+
+            // v2.17: 04_password_page 스크린샷
+            await this.captureLoginStep(page, '04_password_page', '비밀번호 입력 페이지');
+
             result = await this.handlePasswordLogin(page, credentials, options);
             if (result && result.success) {
+              // v2.17: 05_password_entered 스크린샷
+              await this.captureLoginStep(page, '05_password_entered', '비밀번호 입력 완료');
+              this.writeLoginLog('비밀번호 입력 완료');
+
               await new Promise(r => setTimeout(r, this.config.waitTimes.pageLoad));
               continue;
             }
@@ -547,7 +618,18 @@ class ImprovedAuthenticationService {
 
           case 'two_factor':
             console.log(chalk.blue(`[ImprovedAuth] 🔐 2단계 인증 페이지`));
-            return await this.handle2FALogin(page, credentials, options);
+            this.writeLoginLog('2단계 인증 페이지');
+
+            // v2.17: 06_2fa_page 스크린샷
+            await this.captureLoginStep(page, '06_2fa_page', '2단계 인증 페이지');
+
+            result = await this.handle2FALogin(page, credentials, options);
+            if (result && result.success) {
+              // v2.17: 07_2fa_completed 스크린샷
+              await this.captureLoginStep(page, '07_2fa_completed', '2단계 인증 완료');
+              this.writeLoginLog('2단계 인증 완료');
+            }
+            return result;
 
           case 'logged_in':
             this.log('✅ 로그인 완료!', 'success');
@@ -1558,10 +1640,8 @@ class ImprovedAuthenticationService {
       await page.keyboard.up('Control');
       await page.keyboard.press('Backspace');
       
-      // TOTP 코드 입력 준비
-      await this.enterTOTPCode(page, token, credentials);
-      
-      return { success: true };
+      // TOTP 코드 입력 및 제출 (반환값 사용)
+      return await this.enterTOTPCode(page, token, credentials);
       
     } catch (error) {
       this.log(`❌ TOTP 코드 처리 실패: ${error.message}`, 'error');
@@ -1583,9 +1663,47 @@ class ImprovedAuthenticationService {
    * TOTP 코드를 입력 필드에 입력하고 제출
    */
   async enterTOTPCode(page, token, credentials) {
+    // ★ 버튼 클릭 전 현재 URL 저장 (페이지 변화 감지용)
+    const currentUrl = page.url();
+
     try {
       this.log(`📝 TOTP 코드 입력 시작: ${token}`, 'info');
-      
+
+      // ★ 입력 필드 찾기 및 포커스 (1595행 경로에서 필드 클릭 누락 방지)
+      const inputSelectors = [
+        'input[type="tel"]',
+        'input[name="totpPin"]',
+        '#totpPin',
+        'input[type="text"][autocomplete="one-time-code"]',
+        'input[aria-label*="코드"]',
+        'input[aria-label*="code"]',
+        'input#idvPin',
+        'input[name="idvPin"]'
+      ];
+
+      let codeInput = null;
+      for (const selector of inputSelectors) {
+        try {
+          codeInput = await page.waitForSelector(selector, { visible: true, timeout: 1000 });
+          if (codeInput) break;
+        } catch (e) {
+          continue;
+        }
+      }
+
+      if (codeInput) {
+        await codeInput.click();
+        await new Promise(r => setTimeout(r, 300));
+        // 기존 내용 지우기
+        await page.keyboard.down('Control');
+        await page.keyboard.press('a');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await new Promise(r => setTimeout(r, 200));
+      } else {
+        this.log('⚠️ 입력 필드를 찾을 수 없어 현재 포커스 위치에 입력합니다', 'warning');
+      }
+
       // 숫자를 하나씩 천천히 입력 (사람처럼)
       for (const digit of token) {
         await page.keyboard.type(digit);
@@ -1748,18 +1866,18 @@ class ImprovedAuthenticationService {
       }
       
       await new Promise(r => setTimeout(r, 2000));
-      
+
       // 페이지 변화 확인
-      const currentUrl = page.url();
+      const finalUrl = page.url();
       const pageType = await this.detectPageType(page);
-      
-      this.log(`📍 2FA 후 URL: ${currentUrl}`, 'info');
+
+      this.log(`📍 2FA 후 URL: ${finalUrl}`, 'info');
       this.log(`📄 2FA 후 페이지 타입: ${pageType}`, 'info');
-      
+
       // 로그인 성공 여부 확인
-      if (pageType === 'logged_in' || 
-          currentUrl.includes('youtube.com') || 
-          currentUrl.includes('myaccount.google.com')) {
+      if (pageType === 'logged_in' ||
+          finalUrl.includes('youtube.com') ||
+          finalUrl.includes('myaccount.google.com')) {
         this.log('✅ 2FA 인증 성공!', 'success');
         return { success: true };
       }
@@ -1798,6 +1916,7 @@ class ImprovedAuthenticationService {
 
   /**
    * Next 버튼 찾기 및 클릭 (한국어/영어 지원)
+   * ★★★ v2.17: 휴먼라이크 클릭 적용 ★★★
    */
   async findAndClickNextButton(page) {
     try {
@@ -1811,9 +1930,15 @@ class ImprovedAuthenticationService {
         try {
           const button = await page.waitForSelector(selector, { timeout: 1000 });
           if (button) {
-            await button.click();
-            this.log(`✅ Next 버튼 클릭 (${selector})`, 'debug');
-            return true;
+            // 버튼 좌표 계산 후 휴먼라이크 클릭
+            const coords = await button.boundingBox();
+            if (coords) {
+              const x = coords.x + coords.width / 2;
+              const y = coords.y + coords.height / 2;
+              await this.humanLikeMoveAndClick(page, x, y);
+              this.log(`✅ Next 버튼 클릭 (${selector})`, 'debug');
+              return true;
+            }
           }
         } catch (e) {
           // 계속 시도
@@ -1841,9 +1966,15 @@ class ImprovedAuthenticationService {
         try {
           const button = await page.$(selector);
           if (button) {
-            await button.click();
-            this.log(`✅ Next 버튼 클릭 (${selector})`, 'debug');
-            return true;
+            // 버튼 좌표 계산 후 휴먼라이크 클릭
+            const coords = await button.boundingBox();
+            if (coords) {
+              const x = coords.x + coords.width / 2;
+              const y = coords.y + coords.height / 2;
+              await this.humanLikeMoveAndClick(page, x, y);
+              this.log(`✅ Next 버튼 클릭 (${selector})`, 'debug');
+              return true;
+            }
           }
         } catch (e) {
           // 계속 시도
@@ -1851,20 +1982,27 @@ class ImprovedAuthenticationService {
       }
 
       // DOM 검색으로 버튼 찾기 (최후의 수단)
-      const foundButton = await page.evaluate(() => {
+      const buttonInfo = await page.evaluate(() => {
         const buttons = document.querySelectorAll('button, div[role="button"], span[role="button"]');
         for (const button of buttons) {
           const text = button.textContent?.toLowerCase() || '';
           if (text.includes('next') || text.includes('continue') ||
               text.includes('sign in') || text.includes('다음')) {
-            button.click();
-            return true;
+            const rect = button.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              return {
+                found: true,
+                x: rect.x + rect.width / 2,
+                y: rect.y + rect.height / 2
+              };
+            }
           }
         }
-        return false;
+        return { found: false };
       });
 
-      if (foundButton) {
+      if (buttonInfo.found) {
+        await this.humanLikeMoveAndClick(page, buttonInfo.x, buttonInfo.y);
         this.log(`✅ Next 버튼 클릭 (DOM 검색)`, 'debug');
         return true;
       }
@@ -3113,18 +3251,25 @@ class ImprovedAuthenticationService {
         // ============================================================
         // 방법 1: li[data-authuser="-1"] - Google 계정 선택기에서 "다른 계정 사용" 버튼
         // data-authuser="-1"은 새 계정을 의미함
+        // ★★★ v2.17: 스크롤 처리 추가 ★★★
         // ============================================================
         const addAccountLi = document.querySelector('li[data-authuser="-1"]');
         if (addAccountLi) {
+          // 요소가 화면에 보이도록 스크롤
+          addAccountLi.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+          // 스크롤 후 좌표 재계산을 위해 약간 대기 필요 (evaluate 외부에서 처리)
           const rect = addAccountLi.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
             console.log('✅ "다른 계정 사용" 버튼 발견 (data-authuser="-1")');
+            console.log(`   위치: (${Math.round(rect.x + rect.width / 2)}, ${Math.round(rect.y + rect.height / 2)})`);
             return {
               found: true,
               x: rect.x + rect.width / 2,
               y: rect.y + rect.height / 2,
               selector: 'li[data-authuser="-1"]',
-              text: '다른 계정 사용'
+              text: '다른 계정 사용',
+              needsScroll: true  // 스크롤이 필요했음을 표시
             };
           }
         }
@@ -3156,11 +3301,22 @@ class ImprovedAuthenticationService {
                 if (el.hasAttribute('data-identifier-logged-in')) continue;
                 if (el.hasAttribute('data-identifier-logged-out')) continue;
 
-                // 부모 요소에 data-identifier가 있어도 스킵
+                // ★★★ v2.17 수정: data-authuser가 -1이 아니면 스킵 (기존 계정) ★★★
+                const authUser = el.getAttribute('data-authuser');
+                if (authUser !== null && authUser !== '-1') {
+                  console.log(`   ⏭️ 기존 계정 스킵 (data-authuser="${authUser}")`);
+                  continue;
+                }
+
+                // 부모 요소에 data-identifier 또는 기존 계정 data-authuser가 있어도 스킵
                 const hasAccountParent = el.closest('[data-identifier]') ||
                                         el.closest('[data-identifier-logged-in]') ||
-                                        el.closest('[data-identifier-logged-out]');
-                if (hasAccountParent) continue;
+                                        el.closest('[data-identifier-logged-out]') ||
+                                        el.closest('[data-authuser]:not([data-authuser="-1"])');
+                if (hasAccountParent) {
+                  console.log(`   ⏭️ 부모가 기존 계정 - 스킵`);
+                  continue;
+                }
 
                 // 최소 크기 검증 (클릭 가능한 합리적인 크기)
                 if (rect.width >= 50 && rect.height >= 30) {
@@ -3211,20 +3367,42 @@ class ImprovedAuthenticationService {
         return { success: false, error: 'BUTTON_NOT_FOUND' };
       }
 
-      // 버튼 클릭
-      this.log(`"${buttonInfo.text}" 버튼 클릭 - 위치: (${Math.round(buttonInfo.x)}, ${Math.round(buttonInfo.y)})`, 'info');
+      // ★★★ v2.17: 스크롤이 필요했던 경우 대기 후 좌표 재계산 ★★★
+      let clickX = buttonInfo.x;
+      let clickY = buttonInfo.y;
 
-      // 선택자가 있으면 선택자로, 없으면 좌표로 클릭
-      if (buttonInfo.selector) {
-        try {
-          await page.click(buttonInfo.selector);
-        } catch (e) {
-          // 선택자 실패 시 좌표 클릭
-          await page.mouse.click(buttonInfo.x, buttonInfo.y);
+      if (buttonInfo.needsScroll) {
+        this.log('스크롤 완료 대기 중...', 'debug');
+        await new Promise(r => setTimeout(r, 500));  // 스크롤 애니메이션 완료 대기
+
+        // 스크롤 후 좌표 재계산
+        if (buttonInfo.selector) {
+          const newCoords = await page.evaluate((selector) => {
+            const el = document.querySelector(selector);
+            if (el) {
+              const rect = el.getBoundingClientRect();
+              return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            }
+            return null;
+          }, buttonInfo.selector);
+
+          if (newCoords) {
+            clickX = newCoords.x;
+            clickY = newCoords.y;
+            this.log(`스크롤 후 좌표 재계산: (${Math.round(clickX)}, ${Math.round(clickY)})`, 'debug');
+          }
         }
-      } else {
-        await page.mouse.click(buttonInfo.x, buttonInfo.y);
       }
+
+      // 버튼 클릭 (휴먼라이크)
+      this.log(`"${buttonInfo.text}" 버튼 클릭 - 위치: (${Math.round(clickX)}, ${Math.round(clickY)})`, 'info');
+
+      // ★★★ v2.17: 휴먼라이크 클릭 사용 ★★★
+      await this.humanLikeMoveAndClick(page, clickX, clickY, {
+        randomOffset: 3,   // 버튼 내 약간의 랜덤 오프셋
+        preDelay: true,    // 클릭 전 자연스러운 대기
+        postDelay: true    // 클릭 후 대기
+      });
 
       // 페이지 전환 대기 및 모니터링 (최대 5초)
       const startUrl = page.url();

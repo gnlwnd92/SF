@@ -40,6 +40,7 @@ class ScheduledSubscriptionWorkerUseCase {
     sheetsRepository,          // pauseSheetRepository
     timeFilterService,
     workerLockService,
+    sharedConfig,              // [v2.15] Google Sheets '설정' 탭 기반 설정
     logger
   }) {
     this.adsPowerAdapter = adsPowerAdapter;
@@ -49,6 +50,7 @@ class ScheduledSubscriptionWorkerUseCase {
     this.sheetsRepository = sheetsRepository;
     this.timeFilterService = timeFilterService;
     this.workerLockService = workerLockService;
+    this.sharedConfig = sharedConfig;
     this.logger = logger || console;
 
     // 실행 상태
@@ -79,14 +81,27 @@ class ScheduledSubscriptionWorkerUseCase {
    * @returns {Promise<Object>} 실행 결과
    */
   async execute(options = {}) {
-    const {
-      resumeMinutesBefore = WORKER_DEFAULTS.resumeMinutesBefore,
-      pauseMinutesAfter = WORKER_DEFAULTS.pauseMinutesAfter,
-      maxRetryCount = WORKER_DEFAULTS.maxRetryCount,
-      checkIntervalSeconds = WORKER_DEFAULTS.checkIntervalSeconds,
-      debugMode = WORKER_DEFAULTS.debugMode,
-      continuous = WORKER_DEFAULTS.continuous
-    } = options;
+    // [v2.15] SharedConfig 초기화 (최초 1회)
+    if (this.sharedConfig && !this.sharedConfig.isInitialized) {
+      await this.sharedConfig.initialize();
+    }
+
+    // [v2.15] 설정값 우선순위: options > sharedConfig > WORKER_DEFAULTS
+    const getConfig = (key, fallback) => {
+      if (options[key] !== undefined) return options[key];
+      if (this.sharedConfig) return this.sharedConfig.get(key) ?? fallback;
+      return fallback;
+    };
+
+    const resumeMinutesBefore = getConfig('RESUME_MINUTES_BEFORE', WORKER_DEFAULTS.resumeMinutesBefore);
+    const pauseMinutesAfter = getConfig('PAUSE_MINUTES_AFTER', WORKER_DEFAULTS.pauseMinutesAfter);
+    const maxRetryCount = getConfig('MAX_RETRY_COUNT', WORKER_DEFAULTS.maxRetryCount);
+    const checkIntervalSeconds = getConfig('CHECK_INTERVAL_SECONDS', WORKER_DEFAULTS.checkIntervalSeconds);
+    const debugMode = options.debugMode ?? WORKER_DEFAULTS.debugMode;
+    const continuous = options.continuous ?? WORKER_DEFAULTS.continuous;
+
+    // [v2.25] 윈도우 모드: 'focus' (포커싱) 또는 'background' (백그라운드)
+    this.windowMode = options.windowMode || 'focus';
 
     const startTime = Date.now();
     const workerId = this.workerLockService.getWorkerId();
@@ -216,7 +231,10 @@ class ScheduledSubscriptionWorkerUseCase {
       );
 
       // 5. [v2.14] 결제 미완료 재시도 대상 필터링
-      const paymentPendingMaxHours = WORKER_DEFAULTS.paymentPendingMaxHours || 24;
+      // [v2.15] SharedConfig 우선
+      const paymentPendingMaxHours = this.sharedConfig
+        ? this.sharedConfig.getPaymentPendingMaxHours()
+        : (WORKER_DEFAULTS.paymentPendingMaxHours || 24);
       const pendingRetryTargets = this.timeFilterService.filterPaymentPendingRetryTargets(
         unlockedTasks,
         paymentPendingMaxHours
@@ -300,6 +318,17 @@ class ScheduledSubscriptionWorkerUseCase {
 
     // [v2.11] 진행 중 작업 추적 시작 (Ctrl+C 시 잠금 해제용)
     this.currentTaskRowIndex = rowIndex;
+
+    // [v2.26] 상태 재검증 - Race Condition 방지
+    // 잠금 획득 후, 실제 작업 전에 최신 상태를 다시 확인
+    const freshTask = await this.sheetsRepository.getIntegratedWorkerTaskByRow(rowIndex);
+    if (freshTask && freshTask.status !== task.status) {
+      this.log(chalk.yellow(`   ⏭️ ${email} 스킵 (상태 변경됨: ${task.status} → ${freshTask.status})`));
+      await this.workerLockService.releaseIntegratedWorkerLock(rowIndex);
+      this.currentTaskRowIndex = null;
+      this.stats[type].skipped++;
+      return;
+    }
 
     let adsPowerId = null;
     let usedProfileId = null;  // 실제 사용된 프로필 ID (대체 ID 포함)
@@ -593,8 +622,13 @@ class ScheduledSubscriptionWorkerUseCase {
   async handlePaymentPending(task, rowIndex, result, usedIP, usedProxyId) {
     const email = task.email || task.googleId || 'Unknown';
     const now = new Date();
-    const retryMinutes = WORKER_DEFAULTS.paymentPendingRetryMinutes || 30;
-    const maxHours = WORKER_DEFAULTS.paymentPendingMaxHours || 24;
+    // [v2.15] SharedConfig 우선
+    const retryMinutes = this.sharedConfig
+      ? this.sharedConfig.getPaymentPendingRetryMinutes()
+      : (WORKER_DEFAULTS.paymentPendingRetryMinutes || 30);
+    const maxHours = this.sharedConfig
+      ? this.sharedConfig.getPaymentPendingMaxHours()
+      : (WORKER_DEFAULTS.paymentPendingMaxHours || 24);
     const reason = result.paymentPendingReason || '결제일이 오늘';
 
     // 최초 감지 시각 확인 (N열) - 한국 시간 문자열
@@ -660,10 +694,16 @@ class ScheduledSubscriptionWorkerUseCase {
 
   /**
    * 실제 작업 실행 (일시중지 또는 결제재개)
+   *
+   * [v2.20] retryCount를 UseCase에 전달하여 프록시 우회 지원
+   * [v2.25] windowMode를 UseCase에 전달하여 포커싱/백그라운드 모드 지원
    */
   async executeTask(task, adsPowerId, type, debugMode) {
     // TOTP 코드 값 (D열)
     const totpValue = task.totpCode || task.code || '';
+
+    // [v2.20] 재시도 횟수 추출 (L열)
+    const retryCount = parseInt(task.retryCount) || parseInt(task['재시도횟수']) || 0;
 
     const options = {
       profileData: {
@@ -676,7 +716,9 @@ class ScheduledSubscriptionWorkerUseCase {
         totpSecret: totpValue,
         totpCode: totpValue  // 기존 호환성 유지
       },
-      debugMode
+      debugMode,
+      retryCount,  // [v2.20] 프록시 우회용 재시도 횟수 전달
+      windowMode: this.windowMode  // [v2.25] 포커싱/백그라운드 모드 전달
     };
 
     if (type === 'pause') {

@@ -1,10 +1,14 @@
 /**
- * SessionLogService v1.0 - 세션 로그 및 스크린샷 통합 관리 서비스
+ * SessionLogService v1.1 - 세션 로그 및 스크린샷 통합 관리 서비스
  *
  * 기능:
  * - 폴더 구조: 날짜/계정/시간_작업종류/단계
- * - log.txt (사람용) + meta.json (프로그램용)
+ * - log.txt (단계별 간단 로그) + terminal.txt (터미널 상세 로그) + meta.json (프로그램용)
  * - 3일 자동 정리 + 전체 비우기
+ *
+ * v1.1 변경사항:
+ * - terminal.txt 추가: UseCase에서 출력하는 모든 터미널 로그 기록
+ * - logTerminal() 메서드 추가: 터미널 로그 버퍼링
  */
 const fs = require('fs');
 const path = require('path');
@@ -98,7 +102,8 @@ class SessionLogService {
       startTime: new Date(),
       path: sessionPath,
       screenshots: [],
-      logs: []
+      logs: [],
+      terminalLogs: []  // v1.1: 터미널 상세 로그 버퍼
     };
 
     // 시작 로그 작성
@@ -135,6 +140,9 @@ class SessionLogService {
 
     // log.txt 마무리
     this._writeLogFooter(result, duration, details);
+
+    // v1.1: terminal.txt 저장 (터미널 상세 로그)
+    this._writeTerminalLog();
 
     // meta.json 저장
     this._writeMetaJson(result, endTime, duration, details);
@@ -257,6 +265,90 @@ class SessionLogService {
 
     // 세션 로그 배열에도 추가
     this.session.logs.push({ time, message });
+  }
+
+  /**
+   * 터미널 로그 기록 (상세 로그 - terminal.txt용)
+   * UseCase의 log() 메서드에서 호출하여 터미널에 출력되는 모든 로그를 기록
+   *
+   * @param {string} message - 로그 메시지 (chalk 색상 코드 포함 가능)
+   * @param {string} type - 로그 타입 (info, success, warning, error, debug)
+   * @param {Object} options - 추가 옵션
+   * @param {boolean} options.raw - true면 chalk 색상 코드 제거
+   */
+  logTerminal(message, type = 'info', options = {}) {
+    if (!this.session) return;
+
+    const time = this.getLogTimeStr();
+
+    // chalk 색상 코드 제거 (ANSI escape codes)
+    let cleanMessage = message;
+    if (options.raw !== false) {
+      // ANSI escape codes 제거: \x1b[...m 패턴
+      cleanMessage = message.replace(/\x1b\[[0-9;]*m/g, '');
+    }
+
+    // 타입별 prefix
+    const typePrefix = {
+      info: '[INFO]',
+      success: '[SUCCESS]',
+      warning: '[WARN]',
+      error: '[ERROR]',
+      debug: '[DEBUG]'
+    };
+
+    const prefix = typePrefix[type] || '[INFO]';
+    const logLine = `[${time}] ${prefix.padEnd(9)} ${cleanMessage}`;
+
+    // 버퍼에 추가
+    this.session.terminalLogs.push({
+      time,
+      type,
+      message: cleanMessage,
+      formatted: logLine
+    });
+  }
+
+  /**
+   * terminal.txt 저장
+   */
+  _writeTerminalLog() {
+    if (!this.session || this.session.terminalLogs.length === 0) return;
+
+    const terminalPath = path.join(this.session.path, 'terminal.txt');
+    const startTimeStr = this.session.startTime.toLocaleString('ko-KR');
+    const actionLabel = this.session.action === 'pause' ? '일시중지' : '결제재개';
+
+    // 헤더
+    let content = `════════════════════════════════════════════════════════════════════════════════
+📺 터미널 로그 | ${actionLabel} | ${this.session.email}
+   시작: ${startTimeStr}
+════════════════════════════════════════════════════════════════════════════════
+
+`;
+
+    // 모든 터미널 로그 출력
+    for (const log of this.session.terminalLogs) {
+      content += log.formatted + '\n';
+    }
+
+    // 푸터
+    const endTimeStr = new Date().toLocaleString('ko-KR');
+    const duration = Math.round((new Date() - this.session.startTime) / 1000);
+
+    content += `
+════════════════════════════════════════════════════════════════════════════════
+   종료: ${endTimeStr}
+   소요: ${duration}초
+   로그 수: ${this.session.terminalLogs.length}개
+════════════════════════════════════════════════════════════════════════════════
+`;
+
+    fs.writeFileSync(terminalPath, content, 'utf8');
+
+    if (this.debugMode) {
+      this.logger.log(`[SessionLogService] 터미널 로그 저장: ${this.session.terminalLogs.length}줄`);
+    }
   }
 
   /**

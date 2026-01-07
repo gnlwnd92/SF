@@ -419,6 +419,10 @@ const ScheduledSubscriptionWorkerUseCase = require('./application/usecases/Sched
 // 세션 로그 서비스 (스크린샷 + 로그 통합 관리)
 const SessionLogService = require('./services/SessionLogService');
 
+// 설정 관리 서비스 (Google Sheets '설정' 탭)
+const ConfigRepository = require('./infrastructure/repositories/ConfigRepository');
+const SharedConfig = require('./services/SharedConfig');
+
 // 병렬 처리 및 모니터링 서비스 (Day 9-10)
 const ParallelBatchProcessor = require('./services/ParallelBatchProcessor');
 const RealTimeMonitoringDashboard = require('./services/RealTimeMonitoringDashboard');
@@ -665,12 +669,14 @@ function setupContainer(initialConfig = {}) {
       })),
 
     // 인증 서비스 추가 (개선된 버전 - 계정 선택 페이지 처리 포함)
-    authService: asFunction(() => {
+    // v2.17: sessionLogService 주입으로 로그인 단계별 로깅 지원
+    authService: asFunction(({ sessionLogService }) => {
       // 개선된 버전 사용 여부 확인
       const useImprovedAuth = config.useImprovedAuth !== false;
-      
+
       if (useImprovedAuth) {
         return new ImprovedAuthenticationService({
+          sessionLogService, // v2.17: 로그인 단계별 스크린샷
           debugMode: config.debugMode || false,
           loginCheckTimeout: config.loginCheckTimeout || 10000,
           recaptchaTimeout: config.recaptchaTimeout || 30000,
@@ -689,13 +695,15 @@ function setupContainer(initialConfig = {}) {
         });
       }
     }).singleton(),
-    
+
     // authenticationService alias for compatibility
-    authenticationService: asFunction(() => {
+    // v2.17: sessionLogService 주입으로 로그인 단계별 로깅 지원
+    authenticationService: asFunction(({ sessionLogService }) => {
       const useImprovedAuth = config.useImprovedAuth !== false;
-      
+
       if (useImprovedAuth) {
         return new ImprovedAuthenticationService({
+          sessionLogService, // v2.17: 로그인 단계별 스크린샷
           debugMode: config.debugMode || false,
           loginCheckTimeout: config.loginCheckTimeout || 10000,
           recaptchaTimeout: config.recaptchaTimeout || 30000,
@@ -846,7 +854,8 @@ function setupContainer(initialConfig = {}) {
         buttonService: container.resolve('buttonService'),  // ButtonInteractionService 주입
         mappingService: container.resolve('adsPowerIdMappingService'),  // AdsPowerIdMappingService 주입
         hashProxyMapper: container.resolve('hashProxyMapper'),  // 해시 기반 프록시 매핑 서비스 주입
-        sessionLogService: container.resolve('sessionLogService')  // 세션 로그 서비스 주입
+        sessionLogService: container.resolve('sessionLogService'),  // 세션 로그 서비스 주입
+        sharedConfig: container.resolve('sharedConfig')  // 설정 서비스 주입
       })),
 
     // 갱신확인 일시중지 유스케이스
@@ -881,7 +890,8 @@ function setupContainer(initialConfig = {}) {
         dateParser: container.resolve('dateParser'),  // 날짜 파싱 서비스 주입
         adsPowerIdMappingService: container.resolve('adsPowerIdMappingService'),  // AdsPower ID 매핑 서비스 주입
         hashProxyMapper: container.resolve('hashProxyMapper'),  // 해시 기반 프록시 매핑 서비스 주입
-        sessionLogService: container.resolve('sessionLogService')  // 세션 로그 서비스 주입
+        sessionLogService: container.resolve('sessionLogService'),  // 세션 로그 서비스 주입
+        sharedConfig: container.resolve('sharedConfig')  // 설정 서비스 주입
       })) : asClass(ImprovedResumeSubscriptionUseCase).inject(() => ({
         adsPowerAdapter: container.resolve('adsPowerAdapter'),
         youtubeAdapter: container.resolve('youtubeAdapter'),
@@ -1002,6 +1012,7 @@ function setupContainer(initialConfig = {}) {
       })),
 
     // 가족요금제 체크 유스케이스 (조건부 등록)
+    // [v2.23] hashProxyMapper 의존성 추가
     ...(FamilyPlanCheckUseCase ? {
       familyPlanCheckUseCase: asClass(FamilyPlanCheckUseCase)
         .inject(() => ({
@@ -1011,7 +1022,8 @@ function setupContainer(initialConfig = {}) {
           proxyManager: container.resolve('proxyManager'),
           familyPlanDetector: container.resolve('familyPlanDetector'),
           logger: container.resolve('logger'),
-          config: container.resolve('config')
+          config: container.resolve('config'),
+          hashProxyMapper: container.resolve('hashProxyMapper')
         }))
     } : {}),
 
@@ -1041,17 +1053,20 @@ function setupContainer(initialConfig = {}) {
           familyPlanSheetRepository: container.resolve('familyPlanSheetRepository'),
           familyPlanDetectionService: container.resolve('familyPlanDetectionService'),
           authService: container.resolve('authService'),
+          hashProxyMapper: container.resolve('hashProxyMapper'),  // 프록시 시트에서 프록시 가져오기
           logger: container.resolve('logger'),
           config: container.resolve('config')
         }))
     } : {}),
 
     // 가족요금제 관련 서비스
+    // [v2.23] hashProxyMapper 의존성 추가
     ...(ProxyManagerAdapter ? {
       proxyManager: asClass(ProxyManagerAdapter)
         .inject(() => ({
           adsPowerUrl: container.resolve('config').adsPowerUrl,
-          debugMode: container.resolve('config').debugMode
+          debugMode: container.resolve('config').debugMode,
+          hashProxyMapper: container.resolve('hashProxyMapper')
         }))
     } : {}),
 
@@ -1198,10 +1213,12 @@ function setupContainer(initialConfig = {}) {
     }).singleton(),
 
     // 프록시 로테이션 서비스 등록
+    // [v2.23] hashProxyMapper 의존성 주입 추가
     proxyRotationService: asFunction(() => {
       return new ProxyRotationService({
         debugMode: config.debugMode || false,
-        adsPowerUrl: config.adsPowerApiUrl || 'http://local.adspower.net:50325'
+        adsPowerUrl: config.adsPowerApiUrl || 'http://local.adspower.net:50325',
+        hashProxyMapper: container.resolve('hashProxyMapper')
       });
     }).singleton(),
 
@@ -1330,6 +1347,24 @@ function setupContainer(initialConfig = {}) {
     // 시간체크 통합 구독관리 워커 시스템
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    // 설정 저장소 (Google Sheets '설정' 탭)
+    configRepository: asClass(ConfigRepository)
+      .singleton()
+      .inject(() => ({
+        logger: container.resolve('logger')
+      })),
+
+    // 설정 캐싱 서비스 (5분 자동 동기화)
+    sharedConfig: asFunction(({ configRepository, logger }) => {
+      const sharedConfig = new SharedConfig({
+        configRepository,
+        logger,
+        syncIntervalMs: 5 * 60 * 1000  // 5분
+      });
+      // 비동기 초기화는 사용 시점에 수행
+      return sharedConfig;
+    }).singleton(),
+
     // 시간 필터링 서비스 (KST 기준 시간 조건 필터링)
     timeFilterService: asFunction(() => {
       return new TimeFilterService({
@@ -1344,7 +1379,7 @@ function setupContainer(initialConfig = {}) {
         sheetsRepository: container.resolve('pauseSheetRepository'),
         logger: container.resolve('logger'),
         debugMode: config.debugMode || false,
-        lockExpiryMinutes: 15  // 15분 초과 시 잠금 무효화
+        lockExpiryMinutes: container.resolve('sharedConfig').getLockExpiryMinutes()
       });
     }).singleton(),
 
@@ -1367,6 +1402,7 @@ function setupContainer(initialConfig = {}) {
         sheetsRepository: container.resolve('pauseSheetRepository'),
         timeFilterService: container.resolve('timeFilterService'),
         workerLockService: container.resolve('workerLockService'),
+        sharedConfig: container.resolve('sharedConfig'),  // 설정 서비스 주입
         logger: container.resolve('logger')
       })),
 

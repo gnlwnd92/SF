@@ -159,8 +159,8 @@ class WorkerLockService {
       const myLock = this.createLockValue();
       await this.sheetsRepository.setLockValue(sheetName, rowIndex, myLock);
 
-      // 3. Race condition 방지 대기
-      await this.delay(500);
+      // 3. Race condition 방지 대기 (v2.26: 500ms → 500-1000ms 랜덤)
+      await this.delay(500 + Math.floor(Math.random() * 500));
 
       // 4. 재확인
       const verifyLock = await this.sheetsRepository.getLockValue(sheetName, rowIndex);
@@ -257,8 +257,8 @@ class WorkerLockService {
       const myLock = this.createLockValue();
       await this.sheetsRepository.setIntegratedWorkerLockValue(rowIndex, myLock);
 
-      // 3. Race condition 방지 대기
-      await this.delay(500);
+      // 3. Race condition 방지 대기 (v2.26: 500ms → 500-1000ms 랜덤)
+      await this.delay(500 + Math.floor(Math.random() * 500));
 
       // 4. 재확인
       const verifyLock = await this.sheetsRepository.getIntegratedWorkerLockValue(rowIndex);

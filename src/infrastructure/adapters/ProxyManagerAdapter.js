@@ -9,30 +9,39 @@ const axios = require('axios');
 const { getApiUrl, createApiClient } = require('../../utils/adsPowerPortDetector');
 
 class ProxyManagerAdapter {
-  constructor({ adsPowerUrl, debugMode = false }) {
+  constructor({ adsPowerUrl, debugMode = false, hashProxyMapper }) {
     this.configApiUrl = adsPowerUrl || 'http://local.adspower.net:50325';
     this.apiUrl = null; // 초기화 시 설정됨
     this.apiClient = null; // 초기화 시 생성됨
     this.initialized = false;
     this.debugMode = debugMode;
-    
-    // 프록시 풀 초기화
+
+    // [v2.23] hashProxyMapper 의존성 주입
+    this.hashProxyMapper = hashProxyMapper || null;
+
+    // [v2.23] 하드코딩 프록시 풀 제거 - 시트에서 동적 조회
+    // 레거시 호환성을 위해 빈 풀 유지
     this.proxyPools = {
-      kr: this.initializeKoreanProxies(),
-      pk: this.initializePakistanProxies()
+      kr: [],
+      pk: []
     };
-    
+
     // 프록시 사용 추적 (로테이션용)
     this.usedProxies = {
       kr: new Set(),
       pk: new Set()
     };
-    
+
     // 프록시 상태 캐시
     this.proxyStatus = new Map();
-    
+
     // 별칭 추가 (호환성)
     this.proxies = this.proxyPools;
+
+    if (this.debugMode) {
+      console.log(chalk.cyan('🌐 ProxyManagerAdapter 초기화'));
+      console.log(chalk.gray(`  • 프록시 소스: Google Sheets '프록시' 탭`));
+    }
   }
 
   /**
@@ -60,102 +69,78 @@ class ProxyManagerAdapter {
   }
 
   /**
-   * 한국 프록시 초기화
+   * [v2.23 DEPRECATED] 한국 프록시 초기화 - 하드코딩 제거됨
+   * @deprecated getAvailableProxyFromSheet() 사용
    */
   initializeKoreanProxies() {
-    const proxies = [];
-    const baseConfig = {
-      host: 'kr.decodo.com',
-      username: 'user-sproxq5yy8-sessionduration-1',
-      password: 'CcI9pU1jfbcrU4m2+l',
-      type: 'http'
-    };
-    
-    for (let i = 1; i <= 100; i++) {
-      proxies.push({
-        ...baseConfig,
-        port: 10000 + i,
-        id: `kr_${i}`,
-        country: 'KR'
-      });
-    }
-    
-    if (this.debugMode) {
-      console.log(chalk.cyan(`✅ ${proxies.length}개 한국 프록시 초기화`));
-    }
-    
-    return proxies;
+    console.warn(chalk.yellow('[DEPRECATED] initializeKoreanProxies()는 더 이상 사용되지 않습니다.'));
+    return [];
   }
 
   /**
-   * 파키스탄 프록시 초기화
+   * [v2.23 DEPRECATED] 파키스탄 프록시 초기화 - 하드코딩 제거됨
+   * @deprecated getAvailableProxyFromSheet() 사용
    */
   initializePakistanProxies() {
-    const proxies = [];
-    const baseConfig = {
-      host: 'pk.decodo.com',
-      username: 'user-sproxq5yy8-sessionduration-1',
-      password: 'CcI9pU1jfbcrU4m2+l',
-      type: 'http'
-    };
-    
-    for (let i = 1; i <= 100; i++) {
-      proxies.push({
-        ...baseConfig,
-        port: 10000 + i,
-        id: `pk_${i}`,
-        country: 'PK'
-      });
-    }
-    
-    if (this.debugMode) {
-      console.log(chalk.cyan(`✅ ${proxies.length}개 파키스탄 프록시 초기화`));
-    }
-    
-    return proxies;
+    console.warn(chalk.yellow('[DEPRECATED] initializePakistanProxies()는 더 이상 사용되지 않습니다.'));
+    return [];
   }
 
   /**
-   * 사용 가능한 프록시 가져오기
+   * [v2.23] 시트에서 프록시 조회
+   * @param {string} country - 국가 코드 (kr, pk, us 등)
+   * @returns {Promise<Object>} AdsPower 형식 프록시 객체
+   */
+  async getAvailableProxyFromSheet(country) {
+    if (!this.hashProxyMapper) {
+      throw new Error('hashProxyMapper가 주입되지 않았습니다. container.js 설정을 확인하세요.');
+    }
+
+    try {
+      const result = await this.hashProxyMapper.getRandomProxyFromSheet(country);
+
+      if (this.debugMode) {
+        console.log(chalk.gray(`📡 프록시 조회 (${country}): ${result.proxy.proxy_host}:${result.proxy.proxy_port}`));
+      }
+
+      // 레거시 형식으로 변환 (호환성)
+      return {
+        host: result.proxy.proxy_host,
+        port: parseInt(result.proxy.proxy_port, 10),
+        username: result.proxy.proxy_user,
+        password: result.proxy.proxy_password,
+        type: result.proxy.proxy_type || 'socks5',
+        id: result.proxyId,
+        country: country.toUpperCase(),
+        adsPowerFormat: result.proxy  // 원본 AdsPower 형식도 포함
+      };
+    } catch (error) {
+      console.log(chalk.red(`❌ ${country} 프록시 조회 실패: ${error.message}`));
+      throw new Error(`프록시 시트 접근 실패: ${error.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+    }
+  }
+
+  /**
+   * [v2.23 DEPRECATED] 사용 가능한 프록시 가져오기 - getAvailableProxyFromSheet() 사용
+   * @deprecated
    */
   getAvailableProxy(country) {
-    const pool = this.proxyPools[country];
-    if (!pool || pool.length === 0) {
-      throw new Error(`No proxies available for country: ${country}`);
-    }
-    
-    // 사용하지 않은 프록시 찾기
-    const unused = pool.filter(proxy => !this.usedProxies[country].has(proxy.id));
-    
-    // 모든 프록시가 사용된 경우 리셋
-    if (unused.length === 0) {
-      if (this.debugMode) {
-        console.log(chalk.yellow(`🔄 ${country} 프록시 풀 리셋`));
-      }
-      this.usedProxies[country].clear();
-      return this.getRandomProxy(pool);
-    }
-    
-    // 랜덤 선택
-    const proxy = this.getRandomProxy(unused);
-    this.usedProxies[country].add(proxy.id);
-    
-    if (this.debugMode) {
-      console.log(chalk.gray(`📡 프록시 선택: ${proxy.id} (${proxy.host}:${proxy.port})`));
-    }
-    
-    return proxy;
+    // 동기 메서드로는 시트에서 조회 불가, 에러 throw
+    throw new Error('[v2.23] getAvailableProxy()는 deprecated됨. getAvailableProxyFromSheet() (async)를 사용하세요.');
   }
 
   /**
-   * 랜덤 프록시 선택
+   * [v2.23 DEPRECATED] 랜덤 프록시 선택 - 하드코딩 제거됨
+   * @deprecated getAvailableProxyFromSheet() 사용
    */
   getRandomProxy(proxyList) {
-    return proxyList[Math.floor(Math.random() * proxyList.length)];
+    console.warn(chalk.yellow('[DEPRECATED] getRandomProxy()는 더 이상 사용되지 않습니다.'));
+    return proxyList && proxyList.length > 0 ? proxyList[0] : null;
   }
 
   /**
    * AdsPower 프로필에 프록시 설정
+   * [v2.23] getAvailableProxyFromSheet() 사용으로 변경
    */
   async setProfileProxy(profileId, country) {
     // API 클라이언트 초기화 확인
@@ -164,16 +149,19 @@ class ProxyManagerAdapter {
     }
 
     try {
-      const proxy = this.getAvailableProxy(country);
-      
+      // [v2.23] 시트에서 프록시 조회
+      const proxy = await this.getAvailableProxyFromSheet(country);
+
       const updateData = {
         user_id: profileId,
-        proxy: {
-          type: proxy.type,
-          host: proxy.host,
-          port: proxy.port,
-          username: proxy.username,
-          password: proxy.password
+        // [v2.23] AdsPower 형식 프록시 사용
+        user_proxy_config: proxy.adsPowerFormat || {
+          proxy_soft: 'other',
+          proxy_type: proxy.type,
+          proxy_host: proxy.host,
+          proxy_port: String(proxy.port),
+          proxy_user: proxy.username,
+          proxy_password: proxy.password
         }
       };
       

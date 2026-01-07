@@ -20,7 +20,8 @@ class FamilyPlanCheckUseCase {
     proxyManager,
     familyPlanDetector,
     logger,
-    config
+    config,
+    hashProxyMapper  // [v2.23] hashProxyMapper 의존성 추가
   }) {
     this.adsPower = adsPowerAdapter;
     this.browser = browserController;
@@ -29,10 +30,10 @@ class FamilyPlanCheckUseCase {
     this.detector = familyPlanDetector;
     this.logger = logger;
     this.config = config;
-    
-    // 프록시 리스트
-    this.koreanProxies = this.generateProxyList('kr', 100);
-    this.pakistanProxies = this.generateProxyList('pk', 100);
+    this.hashProxyMapper = hashProxyMapper;  // [v2.23] hashProxyMapper 저장
+
+    // [v2.23] 하드코딩 프록시 제거 - 프록시는 '프록시' 시트에서 조회
+    // this.koreanProxies, this.pakistanProxies 제거됨
   }
 
   /**
@@ -125,14 +126,15 @@ class FamilyPlanCheckUseCase {
       
       if (!profileId) {
         console.log(chalk.yellow(`📱 새 프로필 생성: ${profileName}`));
-        // 한국 프록시를 프로필 생성 시점에 설정
-        const koreanProxy = this.getRandomProxy(this.koreanProxies);
-        profileId = await this.createAdsPowerProfile(profileName, account, koreanProxy);
+        // [v2.23] 한국 프록시를 시트에서 조회
+        const koreanProxyResult = await this.getProxyFromSheet('kr');
+        profileId = await this.createAdsPowerProfile(profileName, account, koreanProxyResult.proxy);
       } else {
         // 기존 프로필이 있으면 한국 프록시로 업데이트
         console.log(chalk.gray(`🔄 프로필 프록시 업데이트: ${profileId}`));
-        const koreanProxy = this.getRandomProxy(this.koreanProxies);
-        await this.updateProfileProxy(profileId, koreanProxy);
+        // [v2.23] 한국 프록시를 시트에서 조회
+        const koreanProxyResult = await this.getProxyFromSheet('kr');
+        await this.updateProfileProxy(profileId, koreanProxyResult.proxy);
       }
       
       // 3. 브라우저 실행 및 로그인
@@ -158,8 +160,9 @@ class FamilyPlanCheckUseCase {
       
       // 5. 파키스탄 프록시로 전환
       console.log(chalk.cyan('🌍 파키스탄 프록시로 전환...'));
-      const pakistanProxy = this.getRandomProxy(this.pakistanProxies);
-      await this.updateProfileProxy(profileId, pakistanProxy);
+      // [v2.23] 파키스탄 프록시를 시트에서 조회
+      const pakistanProxyResult = await this.getProxyFromSheet('pk');
+      await this.updateProfileProxy(profileId, pakistanProxyResult.proxy);
       
       // 6. 브라우저 재실행
       browser = await this.adsPower.launchBrowser(profileId);
@@ -207,11 +210,22 @@ class FamilyPlanCheckUseCase {
 
   /**
    * AdsPower 프로필 생성 (프록시 설정 포함)
+   * [v2.23] proxyConfig는 이제 AdsPower 형식 객체
    */
-  async createAdsPowerProfile(name, account, proxyUrl) {
-    // 프록시 URL 파싱
-    const proxyConfig = this.parseProxy(proxyUrl);
-    
+  async createAdsPowerProfile(name, account, proxyConfig) {
+    // [v2.23] 프록시 설정이 이미 AdsPower 형식인지 확인
+    const userProxyConfig = proxyConfig.proxy_host
+      ? proxyConfig  // 이미 AdsPower 형식
+      : {
+          // 레거시 URL 형식 지원 (fallback)
+          proxy_soft: 'other',
+          proxy_type: 'http',
+          proxy_host: proxyConfig.host,
+          proxy_port: String(proxyConfig.port),
+          proxy_user: proxyConfig.username,
+          proxy_password: proxyConfig.password
+        };
+
     const profileData = {
       name: name,
       group_id: '0', // 기본 그룹
@@ -224,15 +238,8 @@ class FamilyPlanCheckUseCase {
       platform_version: '11',
       device_operating_system: 'Windows 11',
       user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      // 프록시 설정을 프로필 생성 시점에 포함 (올바른 형식)
-      user_proxy_config: {
-        proxy_soft: 'other',  // 필수 필드
-        proxy_type: 'http',
-        proxy_host: proxyConfig.host,
-        proxy_port: String(proxyConfig.port),
-        proxy_user: proxyConfig.username,
-        proxy_password: proxyConfig.password
-      },
+      // [v2.23] 프록시 설정 - AdsPower 형식 직접 사용
+      user_proxy_config: userProxyConfig,
       fingerprint_config: {
         webgl: 1,  // 1 = noise 활성화
         canvas: 1,  // 1 = noise 활성화  
@@ -265,19 +272,24 @@ class FamilyPlanCheckUseCase {
 
   /**
    * 프로필 프록시 업데이트
+   * [v2.23] proxyConfig는 이제 AdsPower 형식 객체
    */
-  async updateProfileProxy(profileId, proxyUrl) {
-    const proxyConfig = this.parseProxy(proxyUrl);
-    
+  async updateProfileProxy(profileId, proxyConfig) {
+    // [v2.23] 프록시 설정이 이미 AdsPower 형식인지 확인
+    const userProxyConfig = proxyConfig.proxy_host
+      ? proxyConfig  // 이미 AdsPower 형식
+      : {
+          // 레거시 URL 형식 지원 (fallback)
+          proxy_soft: 'other',
+          proxy_type: 'http',
+          proxy_host: proxyConfig.host,
+          proxy_port: String(proxyConfig.port),
+          proxy_user: proxyConfig.username,
+          proxy_password: proxyConfig.password
+        };
+
     return await this.adsPower.updateProfile(profileId, {
-      user_proxy_config: {
-        proxy_soft: 'other',  // 필수 필드
-        proxy_type: 'http',
-        proxy_host: proxyConfig.host,
-        proxy_port: String(proxyConfig.port),
-        proxy_user: proxyConfig.username,
-        proxy_password: proxyConfig.password
-      }
+      user_proxy_config: userProxyConfig
     });
   }
 
@@ -365,29 +377,45 @@ class FamilyPlanCheckUseCase {
   }
 
   /**
-   * 프록시 리스트 생성
+   * [v2.23] 프록시 시트에서 프록시 조회
+   * @param {string} country - 국가 코드 (kr, pk, us 등)
+   * @returns {Promise<{proxy: Object, proxyId: string}>}
+   */
+  async getProxyFromSheet(country) {
+    if (!this.hashProxyMapper) {
+      throw new Error('hashProxyMapper가 주입되지 않았습니다. container.js 설정을 확인하세요.');
+    }
+
+    try {
+      const result = await this.hashProxyMapper.getRandomProxyFromSheet(country);
+      console.log(chalk.gray(`  📡 프록시 조회 (${country}): ${result.proxy.proxy_host}:${result.proxy.proxy_port}`));
+      return result;
+    } catch (error) {
+      console.log(chalk.red(`❌ ${country} 프록시 조회 실패: ${error.message}`));
+      throw new Error(`프록시 시트 접근 실패: ${error.message}. Google Sheets '프록시' 탭을 확인하세요.`);
+    }
+  }
+
+  /**
+   * [v2.23 DEPRECATED] 프록시 리스트 생성 - 하드코딩 제거됨
+   * @deprecated getProxyFromSheet() 사용
    */
   generateProxyList(country, count) {
-    const proxies = [];
-    const domain = country === 'kr' ? 'kr.decodo.com' : 'pk.decodo.com';
-    
-    for (let i = 1; i <= count; i++) {
-      const port = 10000 + i;
-      proxies.push(`https://user-sproxq5yy8-sessionduration-1:CcI9pU1jfbcrU4m2+l@${domain}:${port}`);
-    }
-    
-    return proxies;
+    console.warn(chalk.yellow('[DEPRECATED] generateProxyList()는 더 이상 사용되지 않습니다. getProxyFromSheet() 사용하세요.'));
+    return [];  // 빈 배열 반환
   }
 
   /**
-   * 랜덤 프록시 선택
+   * [v2.23 DEPRECATED] 랜덤 프록시 선택 - 하드코딩 제거됨
+   * @deprecated getProxyFromSheet() 사용
    */
   getRandomProxy(proxyList) {
-    return proxyList[Math.floor(Math.random() * proxyList.length)];
+    console.warn(chalk.yellow('[DEPRECATED] getRandomProxy()는 더 이상 사용되지 않습니다. getProxyFromSheet() 사용하세요.'));
+    return null;
   }
 
   /**
-   * 프록시 URL 파싱
+   * 프록시 URL 파싱 (레거시 URL 형식용)
    */
   parseProxy(proxyUrl) {
     const url = new URL(proxyUrl);

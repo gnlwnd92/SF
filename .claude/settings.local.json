@@ -54,7 +54,16 @@
       "Bash(set USE_MOCK_REPOSITORY=true)",
       "Bash(node index.js:*)",
       "Bash(USE_MOCK_REPOSITORY=true node:*)",
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(node scripts/setup-config-sheet.js:*)",
+      "mcp__filesystem__search_files",
+      "Bash(echo:*)",
+      "Bash(node scripts/read-settings-sheet.js:*)",
+      "Bash(node scripts/add-proxy-settings.js:*)",
+      "Bash(cd:*)",
+      "mcp__filesystem__list_allowed_directories",
+      "Bash(tree:*)",
+      "Bash(wc:*)"
     ]
   }
 }

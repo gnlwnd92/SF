@@ -13,8 +13,7 @@ const { languages, detectLanguage } = require('../../infrastructure/config/multi
 const UnifiedSheetsUpdateService = require('../../services/UnifiedSheetsUpdateService');
 const PageStateAnalyzer = require('../../services/PageStateAnalyzer');
 const NavigationStrategy = require('../../services/NavigationStrategy');
-// 프록시 풀 설정 추가 (폴백용)
-const { getRandomProxy, getProxyPoolStatus } = require('../../infrastructure/config/proxy-pools');
+// [v2.23] proxy-pools.js 하드코딩 제거 - 모든 프록시는 '프록시' 시트에서 조회
 // 해시 기반 프록시 매핑 서비스 (의존성 주입으로 전달됨)
 // Frame 안전성 처리를 위한 헬퍼 추가
 const FrameSafetyHandler = require('../../utils/FrameSafetyHandler');
@@ -35,7 +34,8 @@ class EnhancedPauseSubscriptionUseCase {
     buttonService,  // ButtonInteractionService 추가
     mappingService,  // ProfileMappingService 추가
     hashProxyMapper,  // 해시 기반 프록시 매핑 서비스 추가
-    sessionLogService  // 세션 로그 서비스 추가 (스크린샷 + 로그 통합)
+    sessionLogService,  // 세션 로그 서비스 추가 (스크린샷 + 로그 통합)
+    sharedConfig  // [v2.15] Google Sheets '설정' 탭 기반 설정
   }) {
     // config를 먼저 저장 (다른 초기화에서 사용하기 위해)
     this.config = config || {};
@@ -52,6 +52,7 @@ class EnhancedPauseSubscriptionUseCase {
     this.mappingService = mappingService;  // ProfileMappingService 저장
     this.hashProxyMapper = hashProxyMapper;  // 해시 기반 프록시 매핑 서비스 저장
     this.sessionLogService = sessionLogService;  // 세션 로그 서비스 저장
+    this.sharedConfig = sharedConfig;  // [v2.15] 설정 서비스 저장
     this.page = null; // 페이지 참조 저장용
     this.currentLanguage = 'en';
     this.pauseInfo = {};
@@ -59,7 +60,12 @@ class EnhancedPauseSubscriptionUseCase {
     this.actualProfileId = null;  // 실제 사용된 프로필 ID 추적
     this.usedProxyId = null;  // 사용된 프록시 ID 추적 (통합워커 기록용)
     this.ipService = new IPService({ debugMode: false });  // IP 확인 서비스
-    
+
+    // ★★★ v2.17: 현재 단계 추적 (에러 시 스크린샷 용) ★★★
+    this.currentStep = '00_init';  // 현재 실행 중인 단계
+    this.currentStepDescription = '초기화';  // 현재 단계 설명
+    this.stepHistory = [];  // 완료된 단계 이력
+
     // 개선된 인증 서비스 초기화 (계정 선택 페이지 및 2FA 처리)
     this.authService = new ImprovedAuthenticationService({
       debugMode: true,
@@ -79,6 +85,143 @@ class EnhancedPauseSubscriptionUseCase {
       stabilityWait: 1500,
       debug: this.config?.debugMode || false  // this.config에서 debugMode 가져오기
     });
+  }
+
+  // ============================================================
+  // [v2.15] SharedConfig 기반 설정 헬퍼 메서드
+  // ============================================================
+
+  /**
+   * 네비게이션 타임아웃 조회
+   * @returns {number} 타임아웃 (ms)
+   */
+  getNavigationTimeout() {
+    if (this.sharedConfig) {
+      return this.sharedConfig.getNavigationTimeoutMs();
+    }
+    return 30000;  // 기본값
+  }
+
+  /**
+   * 페이지 로드 대기 시간 조회
+   * @returns {number} 대기 시간 (ms)
+   */
+  getPageLoadWait() {
+    if (this.sharedConfig) {
+      return this.sharedConfig.getPageLoadWaitMs();
+    }
+    return 3000;  // 기본값
+  }
+
+  /**
+   * 랜덤 클릭 대기 시간 조회
+   * @returns {number} 대기 시간 (ms)
+   */
+  getRandomClickWait() {
+    if (this.sharedConfig) {
+      return this.sharedConfig.getRandomClickWait();
+    }
+    // 기본값: 500~1500ms 랜덤
+    return Math.floor(Math.random() * 1000) + 500;
+  }
+
+  /**
+   * 팝업 대기 시간 조회
+   * @returns {number} 대기 시간 (ms)
+   */
+  getPopupWait() {
+    if (this.sharedConfig) {
+      return this.sharedConfig.getPopupWaitMs();
+    }
+    return 2000;  // 기본값
+  }
+
+  // ============================================================
+  // [v2.16] 랜덤 진입 경로 - 자동화 탐지 우회
+  // ============================================================
+
+  /**
+   * 랜덤 진입 경로로 YouTube 접근
+   * 직접 paid_memberships 접근 대신 자연스러운 네비게이션 패턴 생성
+   *
+   * @returns {Promise<boolean>} 성공 여부
+   */
+  async performRandomEntry() {
+    // 랜덤 진입 비활성화 시 스킵
+    const enableRandomEntry = this.sharedConfig?.get('ENABLE_RANDOM_ENTRY') ?? true;
+    if (!enableRandomEntry) {
+      if (this.debugMode) console.log(chalk.gray('  ⏭️ 랜덤 진입 비활성화됨 (ENABLE_RANDOM_ENTRY=false)'));
+      return true;
+    }
+
+    try {
+      // 안전한 진입 경로 (비로그인 시 리다이렉트되는 경로 제외)
+      const entryPaths = [
+        { path: '/', name: '홈' },
+        { path: '/feed/trending', name: '인기' },
+        { path: '/feed/subscriptions', name: '구독' }  // 비로그인 시 로그인 페이지로 리다이렉트
+      ];
+
+      const selectedEntry = entryPaths[Math.floor(Math.random() * entryPaths.length)];
+      console.log(chalk.cyan(`  🎲 [RandomEntry] 랜덤 진입: ${selectedEntry.name} (${selectedEntry.path})`));
+
+      // 1단계: 랜덤 경로로 진입
+      await this.page.goto(`https://www.youtube.com${selectedEntry.path}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: this.getNavigationTimeout()
+      });
+
+      // 2단계: 자연스러운 행동 시뮬레이션
+      await this.simulateHumanBehavior();
+
+      // 3단계: 랜덤 대기 (2~4초)
+      const waitTime = 2000 + Math.random() * 2000;
+      if (this.debugMode) console.log(chalk.gray(`  ⏱️ 자연스러운 대기: ${Math.round(waitTime)}ms`));
+      await new Promise(r => setTimeout(r, waitTime));
+
+      return true;
+    } catch (error) {
+      console.log(chalk.yellow(`  ⚠️ [RandomEntry] 랜덤 진입 실패 (계속 진행): ${error.message}`));
+      return false;  // 실패해도 메인 플로우는 계속 진행
+    }
+  }
+
+  /**
+   * 자연스러운 사용자 행동 시뮬레이션
+   * 마우스 이동, 스크롤 등
+   */
+  async simulateHumanBehavior() {
+    try {
+      // 랜덤 마우스 이동 (2~4회)
+      const moveCount = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < moveCount; i++) {
+        const x = 100 + Math.random() * 600;
+        const y = 100 + Math.random() * 400;
+
+        // HumanLikeMouseHelper가 있으면 베지어 곡선 사용
+        if (this.authService?.humanMouseHelper) {
+          await this.authService.humanMouseHelper.moveToPosition(this.page, x, y);
+        } else {
+          await this.page.mouse.move(x, y, { steps: 10 + Math.floor(Math.random() * 20) });
+        }
+
+        await new Promise(r => setTimeout(r, 100 + Math.random() * 300));
+      }
+
+      // 랜덤 스크롤 (50% 확률)
+      if (Math.random() > 0.5) {
+        const scrollAmount = 100 + Math.random() * 300;
+        await this.page.evaluate((amount) => {
+          window.scrollBy({ top: amount, behavior: 'smooth' });
+        }, scrollAmount);
+        await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
+      }
+
+      if (this.debugMode) console.log(chalk.gray('  🖱️ 휴먼라이크 행동 시뮬레이션 완료'));
+    } catch (error) {
+      // 시뮬레이션 실패는 무시
+      if (this.debugMode) console.log(chalk.gray(`  ⚠️ 행동 시뮬레이션 스킵: ${error.message}`));
+    }
   }
 
   /**
@@ -130,10 +273,16 @@ class EnhancedPauseSubscriptionUseCase {
    */
   async execute(profileId, options = {}) {
     const startTime = Date.now();
-    
+
     // 프로필 데이터 저장 (로그인용)
     this.profileData = options.profileData || {};
     this.debugMode = options.debugMode || false;
+
+    // [v2.20] 재시도 횟수 저장 (프록시 우회용)
+    this.retryCount = options.retryCount || 0;
+
+    // [v2.25] 윈도우 모드 저장 (포커싱/백그라운드)
+    this.windowMode = options.windowMode || 'focus';
     
     // 세션 로거에 프로필 작업 시작 기록
     if (this.sessionLogger) {
@@ -179,6 +328,7 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // 1. 브라우저 연결 (대체 ID 지원을 위해 email도 전달)
+      this.startStep('01_browser_connect', '브라우저 연결');  // ★ v2.17: 단계 추적
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.startStep('브라우저 연결', {
           profileId,
@@ -186,7 +336,8 @@ class EnhancedPauseSubscriptionUseCase {
         });
       }
 
-      const browser = await this.connectBrowser(profileId, result.email);
+      // [v2.20] retryCount 전달 (프록시 우회용)
+      const browser = await this.connectBrowser(profileId, result.email, this.retryCount);
       if (!browser) {
         throw new Error('브라우저 연결 실패');
       }
@@ -199,6 +350,7 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // 2. YouTube Premium 페이지 이동
+      this.startStep('02_navigation', 'YouTube 페이지 이동');  // ★ v2.17: 단계 추적
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.startStep('YouTube Premium 페이지 이동');
       }
@@ -230,10 +382,11 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // 3. 언어 감지
+      this.startStep('03_language_detect', '언어 감지');  // ★ v2.17: 단계 추적
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.startStep('언어 감지');
       }
-      
+
       this.currentLanguage = await this.detectPageLanguage(browser);
       result.language = this.currentLanguage;  // 통합워커용 언어 정보 저장
 
@@ -338,14 +491,15 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // 4. 현재 상태 확인
+      this.startStep('10_status_check', '상태 확인');  // ★ v2.17: 단계 추적
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.startStep('현재 구독 상태 확인');
       }
-      
+
       const currentStatus = await this.checkCurrentStatus(browser);
 
       // [v2.15] 상태 확인 후 스크린샷
-      await this.captureStepScreenshot('01_status_check', `상태확인: ${currentStatus.isPaused ? '이미중지' : '활성'}`);
+      await this.captureStepScreenshot('10_status_check', `상태확인: ${currentStatus.isPaused ? '이미중지' : '활성'}`);
 
       if (this.detailedErrorLogger) {
         this.detailedErrorLogger.endStep({
@@ -355,11 +509,13 @@ class EnhancedPauseSubscriptionUseCase {
       }
 
       // [v2.14] 결제 미완료 시 조기 종료
+      // [v2.22] CLI 호환성을 위해 error 필드 추가
       if (currentStatus.paymentPending) {
         this.log(`⚠️ 결제 미완료 상태 - 작업 보류: ${currentStatus.paymentPendingReason}`, 'warning');
         return {
           success: false,
           status: 'payment_pending',
+          error: `결제 미완료: ${currentStatus.paymentPendingReason}`,
           paymentPendingReason: currentStatus.paymentPendingReason,
           paymentPendingDaysUntil: currentStatus.paymentPendingDaysUntil,
           nextBillingDate: currentStatus.nextBillingDate,
@@ -397,6 +553,7 @@ class EnhancedPauseSubscriptionUseCase {
         // checkCurrentStatus에서 얻은 날짜 저장 (일시중지 전)
         this.savedNextBillingDate = currentStatus.nextBillingDate;
         // 5. 일시중지 프로세스 실행
+        this.startStep('11_pause_click', 'Pause 버튼 클릭');  // ★ v2.17: 단계 추적
         const pauseResult = await this.executePauseWorkflow(browser);
         
         if (pauseResult.success) {
@@ -528,13 +685,21 @@ class EnhancedPauseSubscriptionUseCase {
       await this.captureScreenshot(profileId, result);
       
       // 8. 브라우저 연결 해제 (대체 ID 고려)
+      this.startStep('14_finalize', '작업 완료');  // ★ v2.17: 단계 추적
       const profileIdToClose = this.actualProfileId || profileId;
       await this.disconnectBrowser(profileIdToClose);
 
     } catch (error) {
       this.log(`오류 발생: ${error.message}`, 'error');
       result.error = error.message;
-      
+
+      // ★★★ v2.17: 에러 스크린샷 캡처 (현재 단계 정보 포함) ★★★
+      try {
+        await this.captureErrorScreenshot(error.message);
+      } catch (e) {
+        this.log(`에러 스크린샷 캡처 실패: ${e.message}`, 'warning');
+      }
+
       // reCAPTCHA 감지된 경우 특별 처리
       if (error.isRecaptcha || error.message === 'RECAPTCHA_DETECTED') {
         this.log('🛑 reCAPTCHA로 인해 건너뜁니다', 'warning');
@@ -959,10 +1124,15 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 특정 ID로 브라우저 연결 (내부 메서드)
+   *
+   * [v2.20] retryCount 기반 프록시 우회 지원
+   * - retryCount >= proxyRetryThreshold 이면 다른 프록시 사용
+   *
    * @param {string} profileId - AdsPower 프로필 ID
    * @param {string} email - 계정 이메일 (해시 기반 프록시 매핑용)
+   * @param {number} retryCount - 재시도 횟수 (기본 0)
    */
-  async _connectBrowserWithId(profileId, email = null) {
+  async _connectBrowserWithId(profileId, email = null, retryCount = 0) {
     try {
       // [v2.10] 프록시 변경 전 기존 브라우저 종료 (필수!)
       // 프록시 설정(updateProfile)은 프로필 설정만 변경하고, 실행 중인 브라우저에는 적용되지 않음
@@ -985,15 +1155,24 @@ class EnhancedPauseSubscriptionUseCase {
 
         let krProxy;
 
+        // [v2.20] 프록시 우회 임계값 조회 (SharedConfig 또는 기본값 2)
+        const proxyRetryThreshold = this.sharedConfig?.get('PROXY_RETRY_THRESHOLD') ?? 2;
+
         // 해시 기반 프록시 매핑 시도 (hashProxyMapper가 있는 경우)
         if (this.hashProxyMapper) {
           try {
             if (email) {
-              // 이메일이 있으면 해시 기반 매핑 (동일 이메일 → 동일 프록시)
-              const mappingInfo = await this.hashProxyMapper.getMappingInfo(email, 'kr');
-              krProxy = await this.hashProxyMapper.getProxyForAccount(email, 'kr');
+              // [v2.20] 이메일 + 재시도 횟수로 해시 기반 매핑 (우회 지원)
+              const mappingInfo = await this.hashProxyMapper.getMappingInfo(email, 'kr', retryCount, proxyRetryThreshold);
+              krProxy = await this.hashProxyMapper.getProxyForAccount(email, 'kr', retryCount, proxyRetryThreshold);
               this.usedProxyId = mappingInfo.proxyId || null;
-              console.log(chalk.cyan(`  🔐 해시 기반 프록시 매핑: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+
+              // 프록시 우회 여부 표시
+              if (mappingInfo.proxyOffset > 0) {
+                console.log(chalk.yellow(`  🔄 프록시 우회 (재시도 ${retryCount}회): ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+              } else {
+                console.log(chalk.cyan(`  🔐 해시 기반 프록시 매핑: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
+              }
             } else {
               // 이메일 없으면 시트에서 랜덤 선택 (Sticky 세션 프록시 사용)
               console.log(chalk.yellow('  ⚠️ 이메일 정보 없음 - 시트에서 랜덤 프록시 선택'));
@@ -1003,16 +1182,14 @@ class EnhancedPauseSubscriptionUseCase {
               console.log(chalk.cyan(`  🎲 시트 랜덤 프록시: ${krProxy.proxy_host}:${krProxy.proxy_port} (${this.usedProxyId})`));
             }
           } catch (hashError) {
-            console.log(chalk.yellow(`  ⚠️ 해시 프록시 조회 실패: ${hashError.message}`));
-            console.log(chalk.yellow('  ℹ️ 최종 폴백: 하드코딩 랜덤 프록시 사용'));
-            krProxy = getRandomProxy('kr');
-            this.usedProxyId = 'hardcoded_random';  // 하드코딩 프록시 사용 표시
+            // [v2.23] 하드코딩 폴백 제거 - 시트 접근 실패 시 에러 throw
+            console.log(chalk.red(`  ❌ 프록시 조회 실패: ${hashError.message}`));
+            throw new Error(`프록시 시트 접근 실패: ${hashError.message}. Google Sheets '프록시' 탭을 확인하세요.`);
           }
         } else {
-          // hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용
-          console.log(chalk.yellow('  ⚠️ hashProxyMapper 없음 - 하드코딩 랜덤 프록시 사용'));
-          krProxy = getRandomProxy('kr');
-          this.usedProxyId = 'hardcoded_random';
+          // [v2.23] hashProxyMapper 없음 - DI 설정 오류
+          console.log(chalk.red('  ❌ hashProxyMapper가 주입되지 않았습니다'));
+          throw new Error('hashProxyMapper DI 오류: container.js에서 hashProxyMapper 주입을 확인하세요.');
         }
 
         console.log(chalk.cyan(`  🇰🇷 한국 프록시 사용: ${krProxy.proxy_host}:${krProxy.proxy_port}`));
@@ -1051,6 +1228,18 @@ class EnhancedPauseSubscriptionUseCase {
       this.browser = session.browser;
       this.page = page;
 
+      // [v2.25] 포커싱 모드일 때만 브라우저 창을 앞으로 가져오기
+      if (this.windowMode === 'focus') {
+        try {
+          await page.bringToFront();
+          console.log(chalk.gray('  🖥️ 브라우저 창 포커싱'));
+        } catch (focusError) {
+          // 포커싱 실패해도 작업 진행 (CDP가 처리)
+        }
+      } else {
+        console.log(chalk.gray('  🔲 백그라운드 모드 - 포커싱 생략'));
+      }
+
       // 브라우저가 완전히 준비될 때까지 대기
       await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -1069,8 +1258,14 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 브라우저 연결 (대체 ID 지원)
+   *
+   * [v2.20] retryCount 기반 프록시 우회 지원
+   *
+   * @param {string} profileId - AdsPower 프로필 ID
+   * @param {string} email - 계정 이메일
+   * @param {number} retryCount - 재시도 횟수 (기본 0)
    */
-  async connectBrowser(profileId, email = null) {
+  async connectBrowser(profileId, email = null, retryCount = 0) {
     let attemptedIds = [];
     let lastError = null;
 
@@ -1085,7 +1280,7 @@ class EnhancedPauseSubscriptionUseCase {
       try {
         console.log(chalk.blue(`\n🔧 AdsPower ID 시도 1: ${profileId}`));
         attemptedIds.push(profileId);
-        return await this._connectBrowserWithId(profileId, email);
+        return await this._connectBrowserWithId(profileId, email, retryCount);
       } catch (error) {
         console.log(chalk.red(`  ❌ 첫 번째 ID 실패: ${error.message}`));
         lastError = error;
@@ -1123,8 +1318,8 @@ class EnhancedPauseSubscriptionUseCase {
           console.log(chalk.blue(`\n🔧 대체 AdsPower ID 시도: ${altId}`));
           attemptedIds.push(altId);
 
-          // 대체 ID로 성공하면 해당 ID 반환
-          const result = await this._connectBrowserWithId(altId, email);
+          // 대체 ID로 성공하면 해당 ID 반환 (retryCount 전달)
+          const result = await this._connectBrowserWithId(altId, email, retryCount);
 
           // 성공하면 사용한 ID 저장
           this.actualProfileId = altId;
@@ -1206,13 +1401,18 @@ class EnhancedPauseSubscriptionUseCase {
       try {
         console.log(chalk.cyan(`📄 [Navigation] YouTube Premium 페이지로 이동 (시도 ${retryCount + 1}/${maxRetries})`));
 
-        // YouTube Premium 페이지로 직접 이동 시도
+        // [v2.16] 첫 번째 시도에서만 랜덤 진입 수행 (자동화 탐지 우회)
+        if (retryCount === 0) {
+          await this.performRandomEntry();
+        }
+
+        // YouTube Premium 페이지로 이동
         const premiumUrl = 'https://www.youtube.com/paid_memberships';
         console.log(chalk.gray(`🌐 이동 URL: ${premiumUrl}`));
         
         await this.page.goto(premiumUrl, {
           waitUntil: 'domcontentloaded',
-          timeout: 30000
+          timeout: this.getNavigationTimeout()
         });
         
         await new Promise(r => setTimeout(r, 3000));
@@ -1232,7 +1432,7 @@ class EnhancedPauseSubscriptionUseCase {
           // YouTube Premium으로 명시적으로 이동
           await this.page.goto('https://www.youtube.com/premium', {
             waitUntil: 'domcontentloaded',
-            timeout: 30000
+            timeout: this.getNavigationTimeout()
           });
           await new Promise(r => setTimeout(r, 3000));
           
@@ -1318,7 +1518,7 @@ class EnhancedPauseSubscriptionUseCase {
           console.log(chalk.cyan('🎯 로그인 후 YouTube Premium 페이지로 다시 이동...'));
           await this.page.goto('https://www.youtube.com/paid_memberships', {
             waitUntil: 'domcontentloaded',
-            timeout: 30000
+            timeout: this.getNavigationTimeout()
           });
           
           await new Promise(r => setTimeout(r, 3000));
@@ -1331,7 +1531,7 @@ class EnhancedPauseSubscriptionUseCase {
             console.log(chalk.yellow('⚠️ YouTube Music으로 리다이렉트됨. Premium으로 다시 이동...'));
             await this.page.goto('https://www.youtube.com/premium', {
               waitUntil: 'domcontentloaded',
-              timeout: 30000
+              timeout: this.getNavigationTimeout()
             });
             await new Promise(r => setTimeout(r, 3000));
           }
@@ -1964,6 +2164,51 @@ class EnhancedPauseSubscriptionUseCase {
         // 클릭 후 안정화 대기
         await new Promise(r => setTimeout(r, 2000));
 
+        // ★★★ v2.17: 패널 내 스피너 완전 소멸 대기 ★★★
+        const maxSpinnerWait = 15000;
+        const spinnerCheckInterval = 500;
+        let spinnerWaitTime = 0;
+
+        while (spinnerWaitTime < maxSpinnerWait) {
+          const hasSpinner = await this.page.evaluate(() => {
+            const spinnerSelectors = [
+              '.spinner', '.loading', '[aria-busy="true"]',
+              '.yt-spinner', 'tp-yt-paper-spinner', '.ytd-spinner',
+              'paper-spinner', 'paper-spinner-lite'
+            ];
+            for (const selector of spinnerSelectors) {
+              const spinners = document.querySelectorAll(selector);
+              for (const spinner of spinners) {
+                const style = window.getComputedStyle(spinner);
+                const rect = spinner.getBoundingClientRect();
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          });
+
+          if (!hasSpinner) {
+            if (spinnerWaitTime > 0) {
+              this.log(`✅ 스피너 소멸 확인 (${spinnerWaitTime}ms 대기 후)`, 'info');
+            }
+            break;
+          }
+
+          this.log(`⏳ 패널 로딩 중... (${spinnerWaitTime}ms)`, 'debug');
+          await new Promise(resolve => setTimeout(resolve, spinnerCheckInterval));
+          spinnerWaitTime += spinnerCheckInterval;
+        }
+
+        if (spinnerWaitTime >= maxSpinnerWait) {
+          this.log(`⚠️ 스피너 대기 타임아웃 (${maxSpinnerWait}ms) - 계속 진행`, 'warning');
+        }
+
+        // 스피너 소멸 후 추가 안정화 대기
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
         // 멤버십 관리 버튼을 클릭한 후 만료 상태 확인 (방어적 업데이트)
         const expiredCheck = await enhancedButtonService.checkSubscriptionExpired(this.page, true);
 
@@ -2233,7 +2478,7 @@ class EnhancedPauseSubscriptionUseCase {
 
         // [v2.15] Pause 버튼 클릭 후 스크린샷
         if (pauseClicked) {
-          await this.captureStepScreenshot('02_pause_click', 'Pause 버튼 클릭');
+          await this.captureStepScreenshot('11_pause_click', 'Pause 버튼 클릭');
         }
 
         if (!pauseClicked && attempts < maxAttempts) {
@@ -2253,7 +2498,7 @@ class EnhancedPauseSubscriptionUseCase {
       const popupResult = await this.confirmPauseInPopup();
 
       // [v2.15] 팝업 확인 후 스크린샷
-      await this.captureStepScreenshot('03_popup', `팝업확인: ${popupResult.confirmed ? '성공' : '실패'}`);
+      await this.captureStepScreenshot('12_popup', `팝업확인: ${popupResult.confirmed ? '성공' : '실패'}`);
 
       if (!popupResult.confirmed) {
         // 팝업 없이 이미 일시중지된 상태인지 확인
@@ -2274,7 +2519,7 @@ class EnhancedPauseSubscriptionUseCase {
       const finalStatus = await this.verifyPauseSuccess();
 
       // [v2.15] 최종 검증 후 스크린샷
-      await this.captureStepScreenshot('04_verify', `검증: ${finalStatus.success ? '성공' : '실패'}`);
+      await this.captureStepScreenshot('13_verify', `검증: ${finalStatus.success ? '성공' : '실패'}`);
 
       if (finalStatus.success) {
         result.success = true;
@@ -3606,7 +3851,7 @@ class EnhancedPauseSubscriptionUseCase {
 
       // SessionLogService가 있고 세션이 활성화되어 있으면 새 방식 사용
       if (this.sessionLogService?.hasActiveSession()) {
-        const stepName = step || (result.success ? '05_success' : `error_${result.errorType || 'unknown'}`);
+        const stepName = step || (result.success ? '14_success' : `error_${result.errorType || 'unknown'}`);
         const description = result.success ? '작업 완료' : `오류: ${result.error || 'unknown'}`;
         await this.sessionLogService.capture(this.page, stepName, description);
         return;
@@ -3663,8 +3908,57 @@ class EnhancedPauseSubscriptionUseCase {
     }
   }
 
+  // ============================================================
+  // [v2.17] 에러 스크린샷을 위한 단계 추적 헬퍼 메서드
+  // ============================================================
+
+  /**
+   * 단계 시작 기록
+   * @param {string} stepCode - 단계 코드 (예: '01_browser_connect')
+   * @param {string} description - 단계 설명
+   */
+  startStep(stepCode, description) {
+    this.currentStep = stepCode;
+    this.currentStepDescription = description;
+    this.log(`📍 단계 시작: ${stepCode} - ${description}`, 'debug');
+  }
+
+  /**
+   * 단계 완료 기록
+   * @param {string} stepCode - 단계 코드
+   */
+  completeStep(stepCode) {
+    this.stepHistory.push({
+      step: stepCode,
+      description: this.currentStepDescription,
+      completedAt: new Date().toISOString()
+    });
+    this.log(`✅ 단계 완료: ${stepCode}`, 'debug');
+  }
+
+  /**
+   * 에러 발생 시 현재 단계 스크린샷 캡처
+   * @param {string} errorMessage - 에러 메시지
+   */
+  async captureErrorScreenshot(errorMessage) {
+    if (!this.sessionLogService?.hasActiveSession() || !this.page) {
+      return;
+    }
+
+    try {
+      const errorStep = `error_${this.currentStep || 'unknown'}`;
+      const description = `에러: ${errorMessage} (${this.currentStepDescription || 'unknown step'})`;
+
+      await this.sessionLogService.capture(this.page, errorStep, description);
+      this.log(`📸 에러 스크린샷 캡처: ${errorStep}`, 'info');
+    } catch (e) {
+      this.log(`에러 스크린샷 촬영 실패: ${e.message}`, 'warning');
+    }
+  }
+
   /**
    * 로그 출력
+   * v2.17: 터미널 로그를 SessionLogService에도 기록
    */
   log(message, type = 'info') {
     const colors = {
@@ -3674,22 +3968,27 @@ class EnhancedPauseSubscriptionUseCase {
       error: chalk.red,
       debug: chalk.gray
     };
-    
+
     const color = colors[type] || chalk.white;
-    const prefix = type === 'success' ? '✅' : 
-                   type === 'error' ? '❌' : 
-                   type === 'warning' ? '⚠️' : 
+    const prefix = type === 'success' ? '✅' :
+                   type === 'error' ? '❌' :
+                   type === 'warning' ? '⚠️' :
                    type === 'debug' ? '🔍' : '📌';
-    
+
     const timestamp = new Date().toISOString();
     const formattedMessage = `${timestamp} [${type.toUpperCase().padEnd(7)}] ${prefix} ${message}`;
-    
+
     // 모든 로그 출력 (debug 포함)
     console.log(color(formattedMessage));
-    
+
     // 로거에도 저장
     if (this.logger && this.logger.log) {
       this.logger.log(formattedMessage);
+    }
+
+    // ★★★ v2.17: SessionLogService에 터미널 로그 기록 ★★★
+    if (this.sessionLogService?.hasActiveSession()) {
+      this.sessionLogService.logTerminal(formattedMessage, type);
     }
   }
 }

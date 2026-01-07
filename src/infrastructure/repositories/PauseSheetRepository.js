@@ -1195,6 +1195,53 @@ class PauseSheetRepository {
   }
 
   /**
+   * 통합워커 탭에서 특정 행의 작업 정보 조회 (상태 재검증용)
+   * v2.26: Race Condition 방지를 위해 잠금 획득 후 최신 상태 확인
+   *
+   * @param {number} rowIndex - 행 번호 (1-based)
+   * @returns {Promise<Object|null>} 작업 정보 또는 null
+   */
+  async getIntegratedWorkerTaskByRow(rowIndex) {
+    await this.initialize();
+
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `${this.integratedWorkerSheetName}!A${rowIndex}:O${rowIndex}`
+      });
+
+      const row = response.data.values?.[0];
+      if (!row) {
+        return null;
+      }
+
+      return {
+        rowIndex,
+        googleId: row[0] || '',
+        email: row[0] || '',
+        password: row[1] || '',
+        recoveryEmail: row[2] || '',
+        totpCode: row[3] || '',
+        code: row[3] || '',
+        status: row[4] || '',
+        nextPaymentDate: row[5] || '',
+        ip: row[6] || '',
+        result: row[7] || '',
+        scheduledTimeStr: row[8] || '',
+        lockValue: row[9] || '',
+        paymentCard: row[10] || '',
+        retryCount: row[11] || '',
+        proxyId: row[12] || '',
+        pendingCheckAt: row[13] || '',
+        pendingRetryAt: row[14] || ''
+      };
+    } catch (error) {
+      console.error(`[PauseSheetRepository] 통합워커 행${rowIndex} 조회 실패:`, error.message);
+      return null;
+    }
+  }
+
+  /**
    * 통합워커 탭의 E열(상태) 업데이트
    *
    * @param {number} rowIndex - 행 번호 (1-based)
@@ -1557,14 +1604,27 @@ class PauseSheetRepository {
     await this.initialize();
 
     try {
-      const updateData = [];
       const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
-      // E열: 상태 업데이트
-      updateData.push({
+      // ============================================================
+      // v2.26: 3단계 순차 업데이트 (Race Condition 방지)
+      // 1단계: E열 상태 변경 (먼저) - 다른 워커가 필터링에서 제외하도록
+      // 2단계: 나머지 정보 업데이트 (batchUpdate)
+      // 3단계: J열 잠금 해제 (마지막) - 상태 변경 완료 후 해제
+      // ============================================================
+
+      // 1단계: E열 상태 변경 (가장 먼저 실행)
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
         range: `${this.integratedWorkerSheetName}!E${rowIndex}`,
-        values: [[newStatus]]
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [[newStatus]]
+        }
       });
+
+      // 2단계: 나머지 정보 업데이트 (J열 제외)
+      const updateData = [];
 
       // F열: 다음결제일 (있으면)
       if (nextBillingDate) {
@@ -1591,7 +1651,7 @@ class PauseSheetRepository {
         let ipHistory = existingIP ? existingIP.split('\n') : [];
         ipHistory.push(newIPEntry);
         if (ipHistory.length > 10) {
-          ipHistory = ipHistory.slice(-10);  // 최근 10개만 유지
+          ipHistory = ipHistory.slice(-10);
         }
         updateData.push({
           range: `${this.integratedWorkerSheetName}!G${rowIndex}`,
@@ -1606,7 +1666,7 @@ class PauseSheetRepository {
         let proxyHistory = existingProxyId ? existingProxyId.split('\n') : [];
         proxyHistory.push(newProxyEntry);
         if (proxyHistory.length > 10) {
-          proxyHistory = proxyHistory.slice(-10);  // 최근 10개만 유지
+          proxyHistory = proxyHistory.slice(-10);
         }
         updateData.push({
           range: `${this.integratedWorkerSheetName}!M${rowIndex}`,
@@ -1620,23 +1680,30 @@ class PauseSheetRepository {
         values: [['']]
       });
 
-      // J열: 잠금 해제
-      updateData.push({
-        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
-        values: [['']]
-      });
+      // 2단계 실행 (J열 제외한 나머지)
+      if (updateData.length > 0) {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: this.spreadsheetId,
+          resource: {
+            valueInputOption: 'USER_ENTERED',
+            data: updateData
+          }
+        });
+      }
 
-      await this.sheets.spreadsheets.values.batchUpdate({
+      // 3단계: J열 잠금 해제 (가장 마지막에 실행)
+      await this.sheets.spreadsheets.values.update({
         spreadsheetId: this.spreadsheetId,
-        resource: {
-          valueInputOption: 'USER_ENTERED',  // 날짜가 Google Sheets 날짜 형식으로 인식됨
-          data: updateData
+        range: `${this.integratedWorkerSheetName}!J${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: {
+          values: [['']]
         }
       });
 
       const dateInfo = nextBillingDate ? `, 다음결제일→"${nextBillingDate}"` : '';
       const proxyInfo = proxyId ? `, 프록시→"${proxyId}"` : '';
-      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 성공 업데이트 완료: 상태→"${newStatus}"${dateInfo}${proxyInfo}`);
+      console.log(`[PauseSheetRepository] 통합워커 행${rowIndex} 성공 업데이트 완료 (3단계): 상태→"${newStatus}"${dateInfo}${proxyInfo}`);
       return true;
     } catch (error) {
       console.error(`[PauseSheetRepository] 통합워커 성공 업데이트 실패:`, error.message);
