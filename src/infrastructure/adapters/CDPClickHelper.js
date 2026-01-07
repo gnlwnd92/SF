@@ -128,6 +128,18 @@ class CDPClickHelper {
      */
     async clickAtCoordinates(x, y) {
         try {
+            // 세션 유효성 검증 및 재생성 (페이지 변경 시 세션 끊김 대응)
+            if (this.client) {
+                try {
+                    await this.client.send('Runtime.evaluate', { expression: '1' });
+                } catch (e) {
+                    // 세션이 끊어졌으면 재생성
+                    if (this.options.verbose) {
+                        console.log(chalk.yellow('  ⚠️ CDP 세션 끊김 감지, 재생성 중...'));
+                    }
+                    this.client = null;
+                }
+            }
             await this.initialize();
 
             if (this.options.verbose) {

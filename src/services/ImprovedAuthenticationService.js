@@ -1578,8 +1578,8 @@ class ImprovedAuthenticationService {
       const timeRemaining = 30 - (Math.floor(Date.now() / 1000) % 30);
       this.log(`  ⏰ 코드 유효 시간: ${timeRemaining}초`, 'info');
       
-      // 남은 시간이 5초 미만이면 새 코드 대기
-      if (timeRemaining < 5) {
+      // 남은 시간이 15초 미만이면 새 코드 대기 (OTP 입력~완료까지 최대 25초 소요 가능)
+      if (timeRemaining < 15) {
         this.log('⚠️ 코드 만료 임박, 새 코드 대기 중...', 'warning');
         await new Promise(r => setTimeout(r, (timeRemaining + 1) * 1000));
         
@@ -1684,7 +1684,7 @@ class ImprovedAuthenticationService {
       let codeInput = null;
       for (const selector of inputSelectors) {
         try {
-          codeInput = await page.waitForSelector(selector, { visible: true, timeout: 1000 });
+          codeInput = await page.waitForSelector(selector, { visible: true, timeout: 5000 });
           if (codeInput) break;
         } catch (e) {
           continue;
@@ -1807,10 +1807,16 @@ class ImprovedAuthenticationService {
 
           // 4️⃣ 최종 클릭 (CDP 네이티브 또는 폴백)
           this.log(`🖱️ 사람처럼 클릭 중... 시도 ${attempt}/3 (x: ${Math.round(finalX)}, y: ${Math.round(finalY)})`, 'debug');
+          let clickSuccess = false;
           if (this.cdpHelper) {
-            // ✅ CDP 네이티브 클릭 (자동화 탐지 우회)
-            await this.cdpHelper.clickAtCoordinates(finalX, finalY);
-          } else {
+            try {
+              // ✅ CDP 네이티브 클릭 (자동화 탐지 우회)
+              clickSuccess = await this.cdpHelper.clickAtCoordinates(finalX, finalY);
+            } catch (e) {
+              this.log(`⚠️ CDP 클릭 실패, Puppeteer 폴백: ${e.message}`, 'warning');
+            }
+          }
+          if (!clickSuccess) {
             // 폴백: Puppeteer 클릭
             await page.mouse.click(finalX, finalY);
           }

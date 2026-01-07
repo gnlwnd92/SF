@@ -796,13 +796,62 @@ const languages = {
 };
 
 /**
+ * HTML lang 속성을 정규화하여 언어 코드 반환
+ * @param {string} langCode - HTML lang 속성 값
+ * @returns {string|null} 정규화된 언어 코드
+ */
+function normalizeLanguageCode(langCode) {
+  if (!langCode) return null;
+
+  const lang = langCode.toLowerCase().trim();
+
+  const directMappings = {
+    'ko': 'ko', 'ko-kr': 'ko',
+    'en': 'en', 'en-us': 'en', 'en-gb': 'en',
+    'pt-br': 'pt-br', 'pt-pt': 'pt-pt', 'pt': 'pt',
+    'vi': 'vi', 'vi-vn': 'vi',
+    'id': 'id', 'id-id': 'id',
+    'tr': 'tr', 'tr-tr': 'tr',
+    'ru': 'ru', 'ru-ru': 'ru',
+    'ur': 'ur', 'ur-pk': 'ur',
+    'fr': 'fr', 'fr-fr': 'fr',
+    'ja': 'ja', 'ja-jp': 'ja',
+    'zh-cn': 'zh-CN', 'zh-tw': 'zh-TW', 'zh': 'zh-CN',
+    'es': 'es', 'es-es': 'es',
+    'de': 'de', 'de-de': 'de'
+  };
+
+  return directMappings[lang] || lang.split('-')[0];
+}
+
+/**
  * 언어 감지 함수
  * 페이지 내용을 분석하여 현재 언어를 자동으로 감지
+ * @param {string} pageText - 페이지 텍스트 내용
+ * @param {string} [htmlLang] - HTML lang 속성 (선택적)
+ * @returns {string} 감지된 언어 코드
  */
-function detectLanguage(pageText) {
+function detectLanguage(pageText, htmlLang = null) {
+  // [개선 1] HTML lang 속성 우선 확인 (가장 신뢰도 높음)
+  if (htmlLang) {
+    const normalizedLang = normalizeLanguageCode(htmlLang);
+    if (normalizedLang && languages[normalizedLang]) {
+      console.log(`🌍 [언어감지] HTML lang 속성: ${htmlLang} -> ${normalizedLang}`);
+      return normalizedLang;
+    }
+  }
+
+  // [개선 2] 한글 문자 존재 여부 직접 확인 (유니코드 범위)
+  // 한글 음절: U+AC00-U+D7AF (가-힣)
+  const koreanCharCount = (pageText.match(/[\uAC00-\uD7AF]/g) || []).length;
+  if (koreanCharCount >= 10) {
+    console.log(`🌍 [언어감지] 한글 문자 ${koreanCharCount}자 감지 -> 한국어`);
+    return 'ko';
+  }
+
   // 각 언어의 특징적인 키워드로 감지
   const languageIndicators = {
-    ko: ['멤버십', '관리', '일시중지', '재개'],
+    ko: ['멤버십', '관리', '일시중지', '재개', '결제', '가족', '요금제', '구독', '다음 결제일', '월'],
     en: ['membership', 'Manage', 'Pause', 'Resume'],
     // 포르투갈어 변형 구분 - 브라질과 포르투갈 분리
     'pt-br': ['assinatura', 'Gerenciar', 'Pausar', 'Retomar', 'Próxima cobrança', 'faturamento', 'Pausar assinatura'],

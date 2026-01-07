@@ -15,6 +15,7 @@ const PageStateAnalyzer = require('../../services/PageStateAnalyzer');
 const NavigationStrategy = require('../../services/NavigationStrategy');
 const DateParsingService = require('../../services/DateParsingService');
 const UniversalStatusDetector = require('../../services/UniversalStatusDetector');
+const SafeClickWrapper = require('../../utils/SafeClickWrapper');
 // [v2.23] proxy-pools.js 하드코딩 제거 - 모든 프록시는 '프록시' 시트에서 조회
 // 해시 기반 프록시 매핑 서비스 (의존성 주입으로 전달됨)
 // Google Sheets API
@@ -2425,8 +2426,13 @@ class EnhancedResumeSubscriptionUseCase {
    * 페이지 언어 감지
    */
   async detectPageLanguage(browser) {
-    const pageText = await this.page.evaluate(() => document.body?.textContent || '');
-    return detectLanguage(pageText);
+    const { pageText, htmlLang } = await this.page.evaluate(() => ({
+      pageText: document.body?.textContent || '',
+      htmlLang: document.documentElement.lang || null
+    }));
+
+    this.log(`HTML lang 속성: ${htmlLang || '없음'}`, 'debug');
+    return detectLanguage(pageText, htmlLang);
   }
 
   /**
@@ -3225,34 +3231,88 @@ class EnhancedResumeSubscriptionUseCase {
 
   /**
    * 멤버십 관리 버튼 클릭
+   * [v2.28] 다국어 지원 강화 + SafeClickWrapper + 3단계 재시도
    */
   async clickManageButton() {
-    const lang = languages[this.currentLanguage];
-    
-    const clicked = await this.page.evaluate((manageTexts) => {
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"], yt-button-renderer'));
-      
-      for (const text of manageTexts) {
-        const button = buttons.find(btn => {
-          const btnText = btn.textContent?.trim();
-          return btnText && (btnText === text || btnText.includes(text));
-        });
-        
-        if (button && button.offsetHeight > 0) {
-          button.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          button.click();
-          return true;
-        }
-      }
-      return false;
-    }, lang.buttons.manageMemership);
-    
-    if (clicked) {
-      // 클릭 후 페이지 업데이트 대기 시간 증가 (일시중지와 동일하게 5초)
-      await new Promise(resolve => setTimeout(resolve, 5000));
+    const lang = languages[this.currentLanguage] || languages['pt'] || languages['en'];
+
+    this.log('멤버십 관리 버튼 찾기 시작', 'debug');
+
+    // SafeClickWrapper 초기화
+    if (!this.safeClickWrapper) {
+      this.safeClickWrapper = new SafeClickWrapper(this.page, {
+        debug: this.debugMode,
+        maxRetries: 3
+      });
+    }
+
+    // ===== [개선] 다국어 버튼 텍스트 통합 배열 =====
+    const allManageTexts = [
+      ...(lang.buttons?.manageMemership || []),
+      // 추가 fallback 텍스트 (다국어)
+      'Manage membership', 'Manage', 'Manage subscription',
+      '멤버십 관리', '구독 관리', '관리',
+      'Kelola langganan', 'Kelola',
+      'Quản lý gói thành viên', 'Quản lý',
+      'Gérer la souscription', 'Gérer',
+      'Üyeliği yönet', 'Yönet',
+      'Gerenciar assinatura', 'Gerenciar',
+      'Управление подпиской', 'Управление'
+    ];
+
+    // ===== [시도 1] SafeClickWrapper 사용 =====
+    const clickResult = await this.safeClickWrapper.clickButtonByText(
+      allManageTexts,
+      { selector: 'button, tp-yt-paper-button, [role="button"]' }
+    );
+
+    if (clickResult && clickResult.success) {
+      this.log(`멤버십 관리 버튼 클릭 성공: "${clickResult.text}"`, 'success');
+      await new Promise(resolve => setTimeout(resolve, 7000));
       return true;
     }
-    
+
+    // ===== [시도 2] aria-label로 찾기 =====
+    this.log('텍스트로 못 찾음, aria-label로 시도', 'debug');
+    const ariaResult = await this.page.evaluate((texts) => {
+      const buttons = document.querySelectorAll('button, [role="button"]');
+      for (const btn of buttons) {
+        const ariaLabel = btn.getAttribute('aria-label') || '';
+        for (const text of texts) {
+          if (ariaLabel.toLowerCase().includes(text.toLowerCase())) {
+            btn.click();
+            return { success: true, text: ariaLabel };
+          }
+        }
+      }
+      return { success: false };
+    }, allManageTexts);
+
+    if (ariaResult.success) {
+      this.log(`aria-label로 클릭 성공: "${ariaResult.text}"`, 'success');
+      await new Promise(resolve => setTimeout(resolve, 7000));
+      return true;
+    }
+
+    // ===== [시도 3] 스크롤 후 재시도 =====
+    this.log('버튼 못 찾음, 스크롤 후 재시도', 'debug');
+    await this.page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight / 2);
+    });
+    await new Promise(r => setTimeout(r, 2000));
+
+    const scrollResult = await this.safeClickWrapper.clickButtonByText(
+      allManageTexts,
+      { selector: 'button, tp-yt-paper-button, [role="button"]' }
+    );
+
+    if (scrollResult && scrollResult.success) {
+      this.log(`스크롤 후 클릭 성공: "${scrollResult.text}"`, 'success');
+      await new Promise(resolve => setTimeout(resolve, 7000));
+      return true;
+    }
+
+    this.log('멤버십 관리 버튼을 찾을 수 없음', 'warning');
     return false;
   }
 

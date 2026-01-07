@@ -2052,10 +2052,19 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 페이지 언어 감지
+   * [v2.28] HTML lang 속성 우선 확인 + 한글 유니코드 감지 개선
    */
   async detectPageLanguage(browser) {
-    const pageText = await this.page.evaluate(() => document.body?.textContent || '');
-    return detectLanguage(pageText);
+    // HTML lang 속성과 페이지 텍스트 모두 수집
+    const { pageText, htmlLang } = await this.page.evaluate(() => ({
+      pageText: document.body?.textContent || '',
+      htmlLang: document.documentElement.lang ||
+                document.querySelector('html')?.getAttribute('lang') ||
+                null
+    }));
+
+    this.log(`HTML lang 속성: ${htmlLang || '없음'}`, 'debug');
+    return detectLanguage(pageText, htmlLang);
   }
 
   /**
@@ -2404,6 +2413,7 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 멤버십 관리 버튼 클릭
+   * [v2.28] 다국어 지원 강화 + aria-label 검색 + 스크롤 재시도
    */
   async clickManageButton() {
     // 언어 변형(pt-br, pt-pt)을 안전하게 처리
@@ -2419,37 +2429,73 @@ class EnhancedPauseSubscriptionUseCase {
       });
     }
 
-    // SafeClickWrapper를 사용한 안전한 클릭
+    // ===== [개선] 다국어 버튼 텍스트 통합 배열 =====
+    const allManageTexts = [
+      ...(lang.buttons?.manageMemership || []),
+      // 추가 fallback 텍스트 (다국어)
+      'Manage membership', 'Manage', 'Manage subscription',
+      '멤버십 관리', '구독 관리', '관리',
+      'Kelola langganan', 'Kelola',
+      'Quản lý gói thành viên', 'Quản lý',
+      'Gérer la souscription', 'Gérer',
+      'Üyeliği yönet', 'Yönet',
+      'Gerenciar assinatura', 'Gerenciar',
+      'Управление подпиской', 'Управление'
+    ];
+
+    // ===== [시도 1] SafeClickWrapper 사용 =====
     const clickResult = await this.safeClickWrapper.clickButtonByText(
-      lang.buttons.manageMemership,
+      allManageTexts,
       { selector: 'button, tp-yt-paper-button, [role="button"]' }
     );
 
     if (clickResult && clickResult.success) {
       this.log(`멤버십 관리 버튼 클릭 성공: "${clickResult.text}"`, 'success');
-
-      // 클릭 후 페이지 업데이트 대기 시간 증가 (5초 -> 7초)
       await new Promise(resolve => setTimeout(resolve, 7000));
-
-      // 페이지 업데이트 확인 - 특정 요소를 기다리지 말고 상태 변경만 확인
-      const pageUpdated = await this.page.evaluate(() => {
-        const bodyText = document.body?.innerText || '';
-        // Pause, Resume 버튼이 나타나면 업데이트 완료
-        return bodyText.includes('Pause') || bodyText.includes('일시중지') ||
-               bodyText.includes('Resume') || bodyText.includes('재개');
-      });
-
-      if (pageUpdated) {
-        this.log('페이지 업데이트 확인됨', 'debug');
-      } else {
-        this.log('페이지 업데이트를 확인할 수 없지만 계속 진행', 'debug');
-      }
-
       return true;
-    } else {
-      this.log('멤버십 관리 버튼을 찾을 수 없음', 'warning');
     }
 
+    // ===== [시도 2] aria-label로 찾기 =====
+    this.log('텍스트로 못 찾음, aria-label로 시도', 'debug');
+    const ariaResult = await this.page.evaluate((texts) => {
+      const buttons = document.querySelectorAll('button, [role="button"]');
+      for (const btn of buttons) {
+        const ariaLabel = btn.getAttribute('aria-label') || '';
+        for (const text of texts) {
+          if (ariaLabel.toLowerCase().includes(text.toLowerCase())) {
+            btn.click();
+            return { success: true, text: ariaLabel };
+          }
+        }
+      }
+      return { success: false };
+    }, allManageTexts);
+
+    if (ariaResult.success) {
+      this.log(`aria-label로 클릭 성공: "${ariaResult.text}"`, 'success');
+      await new Promise(resolve => setTimeout(resolve, 7000));
+      return true;
+    }
+
+    // ===== [시도 3] 스크롤 후 재시도 =====
+    this.log('버튼 못 찾음, 스크롤 후 재시도', 'debug');
+    await this.page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight / 2);
+    });
+    await new Promise(r => setTimeout(r, 2000));
+
+    const scrollResult = await this.safeClickWrapper.clickButtonByText(
+      allManageTexts,
+      { selector: 'button, tp-yt-paper-button, [role="button"]' }
+    );
+
+    if (scrollResult && scrollResult.success) {
+      this.log(`스크롤 후 클릭 성공: "${scrollResult.text}"`, 'success');
+      await new Promise(resolve => setTimeout(resolve, 7000));
+      return true;
+    }
+
+    this.log('멤버십 관리 버튼을 찾을 수 없음', 'warning');
     return false;
   }
 
@@ -3666,6 +3712,7 @@ class EnhancedPauseSubscriptionUseCase {
 
   /**
    * 일시중지 성공 확인
+   * [v2.28] Fallback 검증 로직 추가 - Manage 버튼 없이도 검증 가능
    */
   async verifyPauseSuccess() {
     // 페이지 새로고침
@@ -3675,7 +3722,20 @@ class EnhancedPauseSubscriptionUseCase {
     });
     await new Promise(r => setTimeout(r, 3000));
 
-    // [v2.10] 멤버십 관리 버튼 클릭 (재시도 로직 추가)
+    const lang = languages[this.currentLanguage] || languages['en'];
+
+    // ===== [개선 1] 먼저 현재 페이지에서 일시중지 상태 확인 (Manage 클릭 전) =====
+    const quickCheck = await this.verifyPauseByPageState();
+    if (quickCheck.success) {
+      this.log(`✅ 일시중지 상태 확인됨 (방법: ${quickCheck.method}) - Manage 클릭 스킵`, 'success');
+      return {
+        success: true,
+        resumeDate: quickCheck.resumeDate,
+        method: quickCheck.method
+      };
+    }
+
+    // ===== [기존 로직] 멤버십 관리 버튼 클릭 (3회 재시도) =====
     let manageClicked = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       manageClicked = await this.clickManageButton();
@@ -3685,21 +3745,38 @@ class EnhancedPauseSubscriptionUseCase {
         await new Promise(r => setTimeout(r, 3000));
       }
     }
-    
-    const lang = languages[this.currentLanguage];
-    
-    // Resume 버튼 확인
+
+    // ===== [개선 2] Manage 버튼 클릭 실패 시 Fallback 검증 =====
+    if (!manageClicked) {
+      this.log('Manage 버튼을 찾을 수 없음 - Fallback 검증 시도', 'warning');
+
+      // 스크린샷 저장
+      await this.captureStepScreenshot('14_manage_not_found', 'Manage 버튼 미발견');
+
+      const fallbackResult = await this.verifyPauseByPageState();
+      if (fallbackResult.success) {
+        this.log(`✅ Fallback 검증 성공 (${fallbackResult.method}): ${fallbackResult.evidence}`, 'success');
+        return {
+          success: true,
+          resumeDate: fallbackResult.resumeDate,
+          method: `fallback_${fallbackResult.method}`
+        };
+      }
+      // 실패해도 기존 Resume 버튼 확인 로직으로 계속 진행
+    }
+
+    // ===== [기존 로직] Resume 버튼 확인 =====
     const status = await this.page.evaluate((langData) => {
       const result = {
         success: false,
         resumeDate: null
       };
-      
+
       // Resume 버튼 확인 (button + role="button" 모두 체크)
       const buttons = document.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
         const btnText = btn.textContent?.trim();
-        if (btnText && langData.buttons.resume.some(resumeText => btnText.includes(resumeText))) {
+        if (btnText && langData.buttons?.resume?.some(resumeText => btnText.includes(resumeText))) {
           result.success = true;
           break;
         }
@@ -3721,7 +3798,7 @@ class EnhancedPauseSubscriptionUseCase {
         // 러시아어
         /(?:Следующий платёж:\s*)?(\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))/i
       ];
-      
+
       for (const pattern of datePatterns) {
         const dateMatch = pageText.match(pattern);
         if (dateMatch) {
@@ -3730,18 +3807,116 @@ class EnhancedPauseSubscriptionUseCase {
           break;
         }
       }
-      
+
       return result;
     }, lang);
-    
+
+    // ===== [개선 3] Resume 버튼도 없으면 마지막 Fallback =====
+    if (!status.success) {
+      this.log('Resume 버튼을 찾을 수 없음 - 마지막 Fallback 검증', 'warning');
+      const lastFallback = await this.verifyPauseByPageState();
+      if (lastFallback.success) {
+        this.log(`✅ 마지막 Fallback 성공: ${lastFallback.method}`, 'success');
+        return {
+          success: true,
+          resumeDate: lastFallback.resumeDate || status.resumeDate,
+          method: `final_fallback_${lastFallback.method}`
+        };
+      }
+    }
+
     if (status.resumeDate) {
       // EnhancedDateParsingService 사용하여 상세 로그와 함께 날짜 파싱
-      status.resumeDate = this.dateParser ? 
-        this.dateParser.parseDate(status.resumeDate, this.currentLanguage) : 
+      status.resumeDate = this.dateParser ?
+        this.dateParser.parseDate(status.resumeDate, this.currentLanguage) :
         status.resumeDate;
     }
-    
+
     return status;
+  }
+
+  /**
+   * 페이지 상태로 일시중지 성공 여부 확인 (Fallback)
+   * [v2.28] Resume 버튼을 찾을 수 없을 때 사용
+   */
+  async verifyPauseByPageState() {
+    const lang = languages[this.currentLanguage] || languages['en'];
+
+    const verification = await this.page.evaluate((langData) => {
+      const pageText = document.body?.textContent || '';
+      const result = {
+        success: false,
+        method: null,
+        evidence: null,
+        resumeDate: null
+      };
+
+      // 방법 1: 상태 텍스트 확인 ("일시중지됨", "Paused" 등)
+      const pausedStatusTexts = langData.status?.paused || ['Paused', '일시중지됨', '일시중지 상태', 'Đã tạm dừng', 'Dijeda', 'Suspendu'];
+      for (const statusText of pausedStatusTexts) {
+        if (pageText.includes(statusText)) {
+          result.success = true;
+          result.method = 'status_text';
+          result.evidence = statusText;
+          break;
+        }
+      }
+
+      // 방법 2: "멤버십 재개" 또는 "Resume on" 날짜 텍스트 존재 확인
+      if (!result.success) {
+        const resumeDatePatterns = [
+          /멤버십 재개[:\s]*(\d{4}\.\s*\d{1,2}\.\s*\d{1,2})/,
+          /멤버십 재개[:\s]*(\d{1,2}월\s*\d{1,2}일)/,
+          /결제가 다시 시작[:\s]*(\d{4}\.\s*\d{1,2}\.\s*\d{1,2})/,
+          /Resume on[:\s]*([A-Za-z]+\s+\d{1,2})/i,
+          /Membership resumes[:\s]*([A-Za-z]+\s+\d{1,2})/i,
+          /billing resumes[:\s]*([A-Za-z]+\s+\d{1,2})/i,
+          /Dilanjutkan pada[:\s]*(\d{1,2}\s+\w+)/i,
+          /Tiếp tục vào[:\s]*(\d{1,2}\s+thg\s+\d{1,2})/i,
+        ];
+
+        for (const pattern of resumeDatePatterns) {
+          const match = pageText.match(pattern);
+          if (match) {
+            result.success = true;
+            result.method = 'resume_date_text';
+            result.resumeDate = match[1];
+            result.evidence = match[0];
+            break;
+          }
+        }
+      }
+
+      // 방법 3: Pause 버튼이 없고 Resume 관련 텍스트가 있으면 일시중지 상태
+      if (!result.success) {
+        const buttons = document.querySelectorAll('button, [role="button"]');
+        let hasPauseButton = false;
+        let hasResumeRelated = false;
+
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim() || '';
+          if (langData.buttons?.pause?.some(p => text.includes(p))) {
+            hasPauseButton = true;
+          }
+          if (langData.buttons?.resume?.some(r => text.includes(r))) {
+            hasResumeRelated = true;
+          }
+        }
+
+        if (!hasPauseButton && hasResumeRelated) {
+          result.success = true;
+          result.method = 'button_state_inference';
+          result.evidence = 'No Pause button, Resume button found';
+        }
+      }
+
+      return result;
+    }, lang);
+
+    this.log(`Fallback 검증 결과: ${verification.success ? '성공' : '실패'} (${verification.method || 'N/A'})`,
+             verification.success ? 'success' : 'warning');
+
+    return verification;
   }
 
   /**
