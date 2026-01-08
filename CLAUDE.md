@@ -8,22 +8,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
-**버전**: v2.28 (2026-01-08 KST)
+**버전**: v2.32 (2026-01-08 KST) | package.json: 2.0.0
 
 ## Core Commands
 
 ```bash
 # Quick Start
 set USE_MOCK_REPOSITORY=true && npm start  # Mock 모드 (Google Sheets 불필요)
-npm start                                   # CLI 메인 메뉴
+npm start                                   # CLI 메인 메뉴 (index.js)
 
 # 주요 워크플로우
-npm run pause                     # 구독 일시정지
-npm run resume                    # 구독 재개
+npm run pause                     # 구독 일시정지 (--mode pause)
+npm run resume                    # 구독 재개 (--mode resume)
+npm run check                     # 상태 확인 (--mode check)
 npm run family:check              # 가족 요금제 확인
 
-# 테스트
-npm test                          # AdsPower 연결 테스트
+# 테스트/검증
 npm run verify:dates              # 다국어 날짜 파싱 검증
 node test-connection.js           # 단일 프로필 연결 테스트
 
@@ -34,11 +34,16 @@ npm run batch:improved:resume     # 배치 재개
 
 # 백업/복원
 npm run backup:txt                # TXT → Google Sheets 백업
+npm run backup:safe               # 안전한 배치 백업
 npm run restore                   # Google Sheets → TXT 복원
+
+# 세션 관리
+npm run sessions:cleanup          # 세션 정리
+npm run sessions:stats            # 세션 통계
 
 # 디버그
 DEBUG_MODE=true npm start         # 상세 로그 출력
-DEBUG_STARTUP=true npm start      # 시작 시 로그 출력
+DEBUG_STARTUP=true npm start      # 컨테이너 시작 로그 출력
 ```
 
 ## Architecture
@@ -243,9 +248,26 @@ GOOGLE_SHEETS_ID=<sheets_id>
 GOOGLE_SERVICE_ACCOUNT_PATH=./credentials/service-account.json
 
 # 개발
-USE_MOCK_REPOSITORY=true         # Google Sheets 없이 개발
+USE_MOCK_REPOSITORY=true         # Google Sheets 없이 개발 (Mock/SimpleRepository)
 DEBUG_MODE=false
+DEBUG_STARTUP=true               # 컨테이너 초기화 로그
+
+# 선택
+LOGIN_MODE=minimal               # minimal(권장) 또는 legacy
+ANTI_CAPTCHA_API_KEY=            # 이미지 CAPTCHA 자동 해결 (선택)
 ```
+
+## Repository 모드
+
+**Mock 모드** (`USE_MOCK_REPOSITORY=true`):
+- Google Sheets 연결 없이 로컬 개발
+- `SimpleGoogleSheetsRepository` 또는 `MockGoogleSheetsRepository` 사용
+- Service Account 파일 없어도 동작
+
+**실제 모드** (기본):
+- `credentials/service-account.json` 필요
+- `EnhancedGoogleSheetsRepository` 사용
+- 자동 Fallback: Enhanced → Simple → Mock
 
 ## Troubleshooting
 
@@ -290,6 +312,28 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 9. **설정값 변경**: `configKeys.js` 수정 후 '설정' 시트에도 반영
 10. **버전 업데이트**: `EnterpriseCLI.js`의 `displayHeader()` + 이 파일 상단 버전
 
+## 의존성 주입 패턴
+
+`src/container.js`에서 Awilix를 사용한 DI 패턴:
+```javascript
+// 1. 클래스 등록 (싱글톤)
+myService: asClass(MyService).singleton()
+
+// 2. 팩토리 함수 (의존성 주입)
+myService: asFunction(({ dep1, dep2 }) => new MyService({ dep1, dep2 })).singleton()
+
+// 3. Lazy Repository (지연 초기화)
+myRepo: createLazyRepository(MyRepository, config)
+
+// 4. inject() 패턴
+myUseCase: asClass(MyUseCase).inject(() => ({
+  dep1: container.resolve('dep1'),
+  dep2: container.resolve('dep2')
+}))
+```
+
+**등록 순서 주의**: 의존하는 서비스보다 먼저 등록해야 함
+
 ## Development Workflows
 
 ### 새 UseCase 추가 (3단계)
@@ -309,3 +353,29 @@ taskkill /f /im "chrome.exe"     # 좀비 프로세스 정리
 - **백그라운드 모드**: 브라우저 창이 뒤에 유지 (다른 작업 병행 시)
 
 CDP를 통해 윈도우 포커스와 무관하게 마우스/키보드 이벤트 정상 동작.
+
+## 애플리케이션 진입점
+
+`index.js` → `src/presentation/cli/EnterpriseCLI.js`
+
+CLI 모드별 실행:
+```bash
+node index.js                    # 대화형 메뉴
+node index.js --mode pause       # 일시중지 워크플로우
+node index.js --mode resume      # 재개 워크플로우
+node index.js --mode check       # 상태 확인
+node index.js --mode txt-backup  # TXT 백업
+node index.js --improved         # 개선된 CLI
+```
+
+## 주요 서비스 역할
+
+| 서비스 | 역할 |
+|--------|------|
+| `ImprovedAuthenticationService` | Google 계정 로그인, 계정 선택 페이지 처리 |
+| `EnhancedDateParsingService` | 15개 언어 날짜 파싱 (YouTube UI에서 결제일 추출) |
+| `HumanLikeMouseHelper` | 베지어 곡선 기반 자연스러운 마우스 이동 |
+| `CDPClickHelper` | Chrome DevTools Protocol 네이티브 클릭 |
+| `SharedConfig` | Google Sheets '설정' 탭 기반 동적 설정 (5분 캐시) |
+| `WorkerLockService` | 분산 PC 작업 충돌 방지 (J열 잠금) |
+| `HashBasedProxyMappingService` | 이메일 → 프록시 결정론적 매핑 |

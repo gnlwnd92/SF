@@ -257,9 +257,9 @@ class EnterpriseCLI {
     // ═══════════════════════════════════════════════════════════
     // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
     // ═══════════════════════════════════════════════════════════
-    const VERSION = 'v2.28';
+    const VERSION = 'v2.32';
     const VERSION_DATE = '2026-01-08 KST';
-    const VERSION_DESC = 'Resume 다국어 Manage 버튼 클릭 개선';
+    const VERSION_DESC = 'OTP 다음 버튼 클릭 개선 (JS click + Enter 폴백)';
     // ═══════════════════════════════════════════════════════════
 
     console.clear();

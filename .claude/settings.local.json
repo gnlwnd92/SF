@@ -63,7 +63,8 @@
       "Bash(cd:*)",
       "mcp__filesystem__list_allowed_directories",
       "Bash(tree:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(npm run verify:dates:*)"
     ]
   }
 }

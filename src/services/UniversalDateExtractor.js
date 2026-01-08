@@ -175,7 +175,19 @@ class UniversalDateExtractor {
           confidence: 1.0
         })
       },
-      
+
+      // 한국어 짧은 형식: 1월 8일 (연도 없음)
+      {
+        regex: /(\d{1,2})월\s*(\d{1,2})일/g,
+        extract: (match) => ({
+          month: parseInt(match[1]),
+          day: parseInt(match[2]),
+          year: null,  // inferYear()에서 추론
+          original: match[0],
+          confidence: 0.8
+        })
+      },
+
       // 중국어/일본어: 2025年11月2日
       {
         regex: /(\d{4})年(\d{1,2})月(\d{1,2})日/g,
@@ -187,7 +199,19 @@ class UniversalDateExtractor {
           confidence: 1.0
         })
       },
-      
+
+      // 중국어/일본어 짧은 형식: 1月8日 (연도 없음)
+      {
+        regex: /(\d{1,2})月(\d{1,2})日/g,
+        extract: (match) => ({
+          month: parseInt(match[1]),
+          day: parseInt(match[2]),
+          year: null,  // inferYear()에서 추론
+          original: match[0],
+          confidence: 0.8
+        })
+      },
+
       // 태국어 숫자: 2/11/2568 (불교력)
       {
         regex: /(\d{1,2})\/(\d{1,2})\/(\d{4})/g,
@@ -392,40 +416,38 @@ class UniversalDateExtractor {
   }
   
   /**
-   * 연도 추론 (현재 날짜 기반 + 컨텍스트 고려)
+   * 연도 추론 (거리 기반 - 오늘과 더 가까운 연도 선택)
+   * 결제 보류 상태의 과거 날짜도 올바르게 처리
    * @param {number} month - 월
    * @param {number} day - 일
-   * @param {string} context - 'resume' 또는 'pause' 컨텍스트
+   * @param {string} context - 참고용 (로깅에만 사용)
    */
   inferYear(month, day, context = 'pause') {
     const now = new Date();
     const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const currentDay = now.getDate();
 
-    const inputDate = month * 100 + day;
-    const todayDate = currentMonth * 100 + currentDay;
+    // 올해와 내년 날짜 생성 (작년은 결제일에 적합하지 않음)
+    const thisYearDate = new Date(currentYear, month - 1, day);
+    const nextYearDate = new Date(currentYear + 1, month - 1, day);
 
-    // Resume 컨텍스트: 오늘 날짜는 올해로 처리
-    if (context === 'resume' || context === 'nextBilling' || context === '재개') {
-      // 오늘 날짜인 경우 = 올해
-      if (inputDate === todayDate) {
-        return currentYear;
-      }
-      // 과거 날짜 = 내년
-      if (inputDate < todayDate) {
-        return currentYear + 1;
-      }
-      // 미래 날짜 = 올해
-      return currentYear;
+    // 오늘과의 거리 계산 (절대값, 밀리초)
+    const distanceThisYear = Math.abs(thisYearDate - now);
+    const distanceNextYear = Math.abs(nextYearDate - now);
+
+    // 더 가까운 연도 선택
+    const selectedYear = distanceThisYear <= distanceNextYear
+      ? currentYear
+      : currentYear + 1;
+
+    if (this.debugMode) {
+      const daysThisYear = Math.round(distanceThisYear / (1000 * 60 * 60 * 24));
+      const daysNextYear = Math.round(distanceNextYear / (1000 * 60 * 60 * 24));
+      const label = selectedYear === currentYear ? '올해' : '내년';
+      console.log(`  📅 inferYear: ${month}/${day} → ${selectedYear}년 (${label})`);
+      console.log(`     올해: ${daysThisYear}일 차이, 내년: ${daysNextYear}일 차이`);
     }
 
-    // Pause 컨텍스트 (기존 로직 유지): 오늘 날짜는 내년으로 처리
-    if (month < currentMonth || (month === currentMonth && day <= currentDay)) {
-      return currentYear + 1;
-    }
-
-    return currentYear;
+    return selectedYear;
   }
   
   /**
@@ -435,24 +457,29 @@ class UniversalDateExtractor {
     if (!dateObj.year || !dateObj.month || !dateObj.day) {
       return false;
     }
-    
+
+    // 명시적 0 체크 (방어적 코딩)
+    if (dateObj.day === 0 || dateObj.month === 0) {
+      return false;
+    }
+
     // 월 범위 체크
     if (dateObj.month < 1 || dateObj.month > 12) {
       return false;
     }
-    
+
     // 일 범위 체크
     const daysInMonth = new Date(dateObj.year, dateObj.month, 0).getDate();
     if (dateObj.day < 1 || dateObj.day > daysInMonth) {
       return false;
     }
-    
+
     // 연도 범위 체크 (현재 연도 -1 ~ +5)
     const currentYear = new Date().getFullYear();
     if (dateObj.year < currentYear - 1 || dateObj.year > currentYear + 5) {
       return false;
     }
-    
+
     return true;
   }
   

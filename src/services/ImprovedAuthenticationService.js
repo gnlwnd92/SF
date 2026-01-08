@@ -22,9 +22,9 @@ class ImprovedAuthenticationService {
       sessionTimeout: 24 * 60 * 60 * 1000, // 24시간
       maxLoginAttempts: 3,
       waitTimes: {
-        pageLoad: 3000,
-        elementLoad: 2000,
-        afterAction: 1500,
+        pageLoad: 4000,      // v2.31: 3초→4초 (페이지 로드 대기)
+        elementLoad: 3000,   // v2.31: 2초→3초 (요소 로드 대기)
+        afterAction: 2000,   // v2.31: 1.5초→2초 (액션 후 대기)
         betweenRetries: 3000
       },
       ...config
@@ -346,8 +346,8 @@ class ImprovedAuthenticationService {
               timeout: 30000
             });
 
-            // 페이지 로드 대기
-            await new Promise(r => setTimeout(r, 2000));
+            // 페이지 로드 대기 (v2.31: 2초→3초)
+            await new Promise(r => setTimeout(r, 3000));
             console.log(chalk.green('  ✅ Google 로그인 페이지로 이동 완료'));
             continue; // 다음 단계로 계속
 
@@ -359,8 +359,8 @@ class ImprovedAuthenticationService {
             this.log('⚠️ Google 로그인 오류 페이지 감지됨', 'warning');
             result = await this.handleErrorPage(page, options);
             if (result.success) {
-              // 다시 시도 버튼 클릭 후 다음 단계 계속
-              await new Promise(r => setTimeout(r, 2000));
+              // 다시 시도 버튼 클릭 후 다음 단계 계속 (v2.31: 2초→3초)
+              await new Promise(r => setTimeout(r, 3000));
               continue;
             }
             return result;
@@ -403,8 +403,8 @@ class ImprovedAuthenticationService {
             this.log('🔑 패스키 등록 페이지 감지됨', 'info');
             result = await this.handlePasskeyEnrollmentPage(page, options);
             if (result.success) {
-              // 패스키 건너뛴 후 다음 단계 계속
-              await new Promise(r => setTimeout(r, 2000));
+              // 패스키 건너뛴 후 다음 단계 계속 (v2.31: 2초→3초)
+              await new Promise(r => setTimeout(r, 3000));
               continue;
             }
             return result;
@@ -435,8 +435,8 @@ class ImprovedAuthenticationService {
             // ============================================================
             try {
               console.log(chalk.gray('     1️⃣ 뒤로가기 실행 중...'));
-              await page.goBack({ waitUntil: 'networkidle2', timeout: 10000 });
-              await new Promise(r => setTimeout(r, 2000));
+              await page.goBack({ waitUntil: 'networkidle2', timeout: 15000 });  // v2.31: 10초→15초
+              await new Promise(r => setTimeout(r, 3000));  // v2.31: 2초→3초
 
               // 계정 선택 페이지인지 확인
               const backPageType = await this.detectPageType(page);
@@ -451,8 +451,8 @@ class ImprovedAuthenticationService {
                   console.log(chalk.green('     ✅ "다른 계정 사용" 클릭 성공!'));
                   console.log(chalk.green('     ✅ 이메일 입력 페이지로 이동 → CAPTCHA 우회 성공!'));
 
-                  // 페이지 로드 대기
-                  await new Promise(r => setTimeout(r, 2000));
+                  // 페이지 로드 대기 (v2.31: 2초→3초)
+                  await new Promise(r => setTimeout(r, 3000));
 
                   // 다음 루프에서 email_input으로 처리됨
                   continue;
@@ -531,19 +531,19 @@ class ImprovedAuthenticationService {
                 console.log(chalk.green('  ✅ "다음" 버튼 클릭 성공'));
                 this.log('"다음" 버튼 클릭 성공 - 비밀번호 입력 대기', 'success');
 
-                // 페이지 로드 대기
-                await new Promise(r => setTimeout(r, 3000));
+                // 페이지 로드 대기 (v2.31: 3초→4초)
+                await new Promise(r => setTimeout(r, 4000));
                 continue;  // 다음 단계 (비밀번호 입력)로 계속
               } else {
                 console.log(chalk.yellow('  ⚠️ "다음" 버튼을 찾을 수 없음 - 다음 단계 시도'));
                 this.log('"다음" 버튼을 찾을 수 없음', 'warning');
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 3000));  // v2.31: 2초→3초
                 continue;  // 다음 단계로 시도
               }
             } catch (identityError) {
               this.log(`본인 확인 페이지 처리 오류: ${identityError.message}`, 'error');
               console.log(chalk.red(`  ❌ 본인 확인 처리 오류: ${identityError.message}`));
-              await new Promise(r => setTimeout(r, 2000));
+              await new Promise(r => setTimeout(r, 3000));  // v2.31: 2초→3초
               continue;  // 에러가 발생해도 다음 단계 시도
             }
 
@@ -923,6 +923,30 @@ class ImprovedAuthenticationService {
           return { type: 'account_chooser', debug: debugInfo };
         }
 
+        // ★★★ 이메일/식별자 입력 페이지 - URL 기반 감지 (v2.31 수정) ★★★
+        // /signin/identifier URL에서도 CAPTCHA가 표시될 수 있음!
+        // CAPTCHA 텍스트가 있으면 image_captcha, 없으면 email_input
+        if (url.includes('/signin/identifier') ||
+            url.includes('/v3/signin/identifier') ||
+            url.includes('/signin/v2/identifier')) {
+          // CAPTCHA 텍스트 확인 (다국어)
+          const captchaTexts = [
+            '들리거나 표시된 텍스트 입력',  // 한국어
+            'Type the text you hear or see',  // 영어
+            '위 이미지에 표시된 문자를 입력해 주세요',  // 한국어 보조
+            'Enter the text you see or hear',  // 영어 변형
+            'Escribe el texto que ves o escuchas',  // 스페인어
+            'Digite o texto que você vê ou ouve',  // 포르투갈어
+            'Введите текст',  // 러시아어
+          ];
+          const hasCaptchaText = captchaTexts.some(text => bodyText.includes(text));
+
+          if (hasCaptchaText) {
+            return { type: 'image_captcha', debug: debugInfo };
+          }
+          return { type: 'email_input', debug: debugInfo };
+        }
+
         // ★★★ 비밀번호 입력 페이지 - URL 기반 최우선 감지 ★★★
         // /challenge/pwd URL이면 무조건 비밀번호 페이지입니다.
         // 이 체크를 텍스트 기반 CAPTCHA 감지보다 먼저 수행해야 합니다!
@@ -1228,7 +1252,7 @@ class ImprovedAuthenticationService {
         try {
           emailInput = await page.waitForSelector(selector, {
             visible: true,
-            timeout: 3000
+            timeout: 5000  // v2.31: 3초→5초
           });
           if (emailInput) break;
         } catch (e) {
@@ -1261,7 +1285,7 @@ class ImprovedAuthenticationService {
 
         // 이메일 입력
         await emailInput.click();
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 800));  // v2.31: 500ms→800ms
 
         // 기존 텍스트 지우기
         await page.keyboard.down('Control');
@@ -1271,7 +1295,7 @@ class ImprovedAuthenticationService {
 
         // 이메일 입력 (휴먼라이크 타이핑)
         await this.humanLikeType(page, credentials.email);
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 800));  // v2.31: 500ms→800ms
 
         // Next 버튼 클릭
         const nextButton = await this.findAndClickNextButton(page);
@@ -1354,7 +1378,7 @@ class ImprovedAuthenticationService {
         try {
           passwordInput = await page.waitForSelector(selector, {
             visible: true,
-            timeout: 5000
+            timeout: 8000  // v2.31: 5초→8초
           });
           if (passwordInput) {
             this.log(`비밀번호 필드 발견: ${selector}`, 'debug');
@@ -1615,7 +1639,7 @@ class ImprovedAuthenticationService {
         try {
           codeInput = await page.waitForSelector(selector, {
             visible: true,
-            timeout: 2000
+            timeout: 5000  // v2.31: 2초→5초
           });
           if (codeInput) {
             this.log(`✅ 코드 입력 필드 찾음: ${selector}`, 'success');
@@ -1632,7 +1656,7 @@ class ImprovedAuthenticationService {
       
       // 코드 입력 필드 클릭
       await codeInput.click();
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 800));  // v2.31: 500ms→800ms
       
       // 기존 내용 지우기
       await page.keyboard.down('Control');
@@ -1711,8 +1735,31 @@ class ImprovedAuthenticationService {
         await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
       }
       
-      await new Promise(r => setTimeout(r, 1000));
-      
+      await new Promise(r => setTimeout(r, 2000));
+
+      // ★★★ Google 자동 검증 감지 (v2.29) ★★★
+      // TOTP 6자리 입력 완료 시 Google이 자동으로 검증을 시작할 수 있음
+      let autoVerified = false;
+      try {
+        const afterInputUrl = page.url();
+        if (afterInputUrl !== currentUrl || !afterInputUrl.includes('/challenge/totp')) {
+          this.log('✅ Google 자동 검증 감지 - 페이지가 이미 변경됨', 'success');
+          autoVerified = true;
+        }
+      } catch (urlCheckError) {
+        // 페이지 접근 실패도 네비게이션 진행 중일 수 있음
+        this.log('⚠️ URL 확인 실패 - 네비게이션 진행 중일 수 있음', 'warning');
+        autoVerified = true;
+      }
+
+      // 자동 검증이 감지되면 버튼 클릭 생략하고 결과 확인으로 이동
+      if (autoVerified) {
+        this.log('🔄 버튼 클릭 생략 - 결과 확인으로 이동', 'info');
+        // 버튼 클릭 부분을 건너뛰고 결과 확인으로 이동
+        await new Promise(r => setTimeout(r, 5000)); // 네비게이션 완료 대기 (v2.31: 3초→5초)
+        return await this.checkLoginResultAfter2FA(page);
+      }
+
       // 확인 버튼 찾기 및 클릭 (한국어 페이지 우선)
       const buttonSelectors = [
         'button:has-text("다음")',
@@ -1735,33 +1782,99 @@ class ImprovedAuthenticationService {
       ];
       
       let clicked = false;
-      
-      // 먼저 페이지에서 모든 버튼 찾기
+
+      // ★★★ v2.32: JavaScript click() 우선 시도 (봇 탐지 우회) ★★★
+      this.log('🔍 "다음" 버튼 JavaScript click 시도...', 'info');
+
+      const jsClickResult = await page.evaluate(() => {
+        // Google 2FA 페이지의 다양한 버튼 구조 대응
+        const selectors = [
+          'button',
+          '[role="button"]',
+          'div[role="button"]',
+          '[jsname="LgbsSe"]',           // Google 표준 버튼
+          '[data-idom-class*="button"]', // Material Design
+          'input[type="submit"]'
+        ];
+
+        const buttonTexts = ['다음', 'next', '확인', 'verify', '인증'];
+
+        for (const selector of selectors) {
+          const elements = document.querySelectorAll(selector);
+          for (const el of elements) {
+            const text = el.textContent?.trim().toLowerCase();
+            const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+
+            for (const btnText of buttonTexts) {
+              if (text?.includes(btnText) || ariaLabel.includes(btnText)) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  // JavaScript native click
+                  el.click();
+                  return {
+                    success: true,
+                    text: el.textContent?.trim(),
+                    selector: selector
+                  };
+                }
+              }
+            }
+          }
+        }
+        return { success: false };
+      });
+
+      if (jsClickResult.success) {
+        this.log(`✅ JavaScript click 성공: "${jsClickResult.text}" (${jsClickResult.selector})`, 'success');
+        clicked = true;
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 페이지 변화 확인
+        const urlAfterJsClick = page.url();
+        if (urlAfterJsClick !== currentUrl || !urlAfterJsClick.includes('/challenge/totp')) {
+          this.log('✅ JavaScript click 후 페이지 전환 감지', 'success');
+          // 페이지 전환 대기 후 결과 확인
+          await new Promise(r => setTimeout(r, 3000));
+          return await this.checkLoginResultAfter2FA(page);
+        }
+      }
+
+      // JavaScript click이 실패하면 좌표 기반 클릭 시도
+      if (!clicked) {
+        this.log('⚠️ JavaScript click 실패, 좌표 기반 클릭 시도...', 'warning');
+      }
+
+      // 먼저 페이지에서 모든 버튼 찾기 (좌표 기반 클릭용)
       const buttons = await page.evaluate(() => {
         const possibleButtons = [];
-        const buttonElements = document.querySelectorAll('button, div[role="button"], input[type="submit"]');
-        
+        // ★★★ v2.32: 선택자 확장 (Google 특화) ★★★
+        const buttonElements = document.querySelectorAll(
+          'button, [role="button"], div[role="button"], input[type="submit"], ' +
+          '[jsname="LgbsSe"], [data-idom-class*="button"], [jscontroller]'
+        );
+
         buttonElements.forEach(btn => {
           const text = btn.textContent?.trim().toLowerCase();
           const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase();
-          
-          if (text?.includes('다음') || text?.includes('next') || 
+
+          if (text?.includes('다음') || text?.includes('next') ||
               text?.includes('확인') || text?.includes('verify') ||
               text?.includes('인증') || text?.includes('submit') ||
               ariaLabel?.includes('다음') || ariaLabel?.includes('next')) {
-            
+
             const rect = btn.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
               possibleButtons.push({
                 text: btn.textContent?.trim(),
                 selector: btn.id ? `#${btn.id}` : null,
+                tagName: btn.tagName,
                 x: rect.x + rect.width / 2,
                 y: rect.y + rect.height / 2
               });
             }
           }
         });
-        
+
         return possibleButtons;
       });
       
@@ -1813,12 +1926,30 @@ class ImprovedAuthenticationService {
               // ✅ CDP 네이티브 클릭 (자동화 탐지 우회)
               clickSuccess = await this.cdpHelper.clickAtCoordinates(finalX, finalY);
             } catch (e) {
+              // ★★★ Session closed 에러 처리 (v2.29) ★★★
+              // Google 자동 검증으로 인해 세션이 끊어졌을 수 있음 → 성공 가능성
+              if (e.message && e.message.includes('Session closed')) {
+                this.log('⚠️ 세션 종료 감지 - Google 자동 검증 성공 가능성', 'warning');
+                // 세션이 끊어졌으면 페이지가 이미 변경된 것 → 결과 확인으로 이동
+                await new Promise(r => setTimeout(r, 2000));
+                return await this.checkLoginResultAfter2FA(page);
+              }
               this.log(`⚠️ CDP 클릭 실패, Puppeteer 폴백: ${e.message}`, 'warning');
             }
           }
           if (!clickSuccess) {
             // 폴백: Puppeteer 클릭
-            await page.mouse.click(finalX, finalY);
+            try {
+              await page.mouse.click(finalX, finalY);
+            } catch (puppeteerError) {
+              // Puppeteer 클릭도 실패 시 Session closed 확인
+              if (puppeteerError.message && puppeteerError.message.includes('Session closed')) {
+                this.log('⚠️ Puppeteer 클릭 중 세션 종료 - 자동 검증 성공 가능성', 'warning');
+                await new Promise(r => setTimeout(r, 2000));
+                return await this.checkLoginResultAfter2FA(page);
+              }
+              throw puppeteerError;
+            }
           }
 
           // 5️⃣ 클릭 후 자연스러운 일시정지
@@ -1840,38 +1971,81 @@ class ImprovedAuthenticationService {
         }
       }
       
-      // 버튼을 못 찾은 경우 Enter 키 사용
+      // ★★★ v2.32: Enter 키 폴백 강화 ★★★
       if (!clicked) {
-        this.log('⚠️ 버튼을 찾을 수 없어 Enter 키를 누릅니다', 'warning');
+        this.log('⚠️ 버튼 클릭 실패, Enter 키 폴백 시도...', 'warning');
+
+        // 1단계: 입력 필드에서 직접 Enter
         await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 1000));
-        
-        // Enter 키도 안 먹히면 Tab + Enter 시도
-        const urlAfterEnter = page.url();
-        if (urlAfterEnter === currentUrl) {
-          this.log('🔄 Tab + Enter 시도', 'info');
-          await page.keyboard.press('Tab');
-          await new Promise(r => setTimeout(r, 200));
-          await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 1500));
+
+        let urlAfterEnter = page.url();
+        if (urlAfterEnter !== currentUrl && !urlAfterEnter.includes('/challenge/totp')) {
+          this.log('✅ Enter 키로 페이지 전환 성공', 'success');
+          await new Promise(r => setTimeout(r, 2000));
+          return await this.checkLoginResultAfter2FA(page);
         }
+
+        // 2단계: Tab으로 버튼 포커스 이동 후 Enter
+        this.log('🔄 Tab + Enter 시도 (버튼 포커스 이동)', 'info');
+        await page.keyboard.press('Tab');
+        await new Promise(r => setTimeout(r, 300));
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 1500));
+
+        urlAfterEnter = page.url();
+        if (urlAfterEnter !== currentUrl && !urlAfterEnter.includes('/challenge/totp')) {
+          this.log('✅ Tab + Enter로 페이지 전환 성공', 'success');
+          await new Promise(r => setTimeout(r, 2000));
+          return await this.checkLoginResultAfter2FA(page);
+        }
+
+        // 3단계: 여러 번 Tab 후 Enter (버튼까지 도달)
+        this.log('🔄 Tab x3 + Enter 시도 (버튼까지 이동)', 'info');
+        for (let i = 0; i < 3; i++) {
+          await page.keyboard.press('Tab');
+          await new Promise(r => setTimeout(r, 150));
+        }
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 1500));
+
+        urlAfterEnter = page.url();
+        if (urlAfterEnter !== currentUrl && !urlAfterEnter.includes('/challenge/totp')) {
+          this.log('✅ Tab x3 + Enter로 페이지 전환 성공', 'success');
+          await new Promise(r => setTimeout(r, 2000));
+          return await this.checkLoginResultAfter2FA(page);
+        }
+
+        // 4단계: 마지막으로 form submit 시도
+        this.log('🔄 Form submit 시도', 'info');
+        await page.evaluate(() => {
+          const form = document.querySelector('form');
+          if (form) {
+            form.submit();
+            return true;
+          }
+          return false;
+        });
+        await new Promise(r => setTimeout(r, 2000));
       }
       
       // 로그인 완료 대기 (페이지 변화 감지)
       this.log('⏳ 2FA 인증 처리 대기 중...', 'info');
-      
+
       try {
-        // 페이지 네비게이션 대기 (최대 10초)
+        // 페이지 네비게이션 대기 (v2.31: 10초→15초로 증가)
         await page.waitForNavigation({
           waitUntil: 'domcontentloaded',
-          timeout: 10000
+          timeout: 15000
         });
         this.log('✅ 페이지 전환 감지됨', 'success');
       } catch (navError) {
         // 네비게이션 타임아웃은 무시 (SPA일 수 있음)
         this.log('⚠️ 페이지 전환 대기 타임아웃 (정상일 수 있음)', 'info');
       }
-      
-      await new Promise(r => setTimeout(r, 2000));
+
+      // v2.31: 페이지 전환 후 안정화 대기 시간 증가 (2초→4초)
+      await new Promise(r => setTimeout(r, 4000));
 
       // 페이지 변화 확인
       const finalUrl = page.url();
@@ -1921,6 +2095,79 @@ class ImprovedAuthenticationService {
   }
 
   /**
+   * ★★★ 2FA 후 로그인 결과 확인 (v2.29) ★★★
+   * Google 자동 검증 또는 Session closed 후 로그인 상태 확인
+   */
+  async checkLoginResultAfter2FA(page) {
+    this.log('🔍 2FA 후 로그인 결과 확인 중...', 'info');
+
+    // 여러 번 시도하여 네비게이션 완료 확인
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const currentUrl = page.url();
+        this.log(`📍 [${attempt + 1}/5] 현재 URL: ${currentUrl}`, 'debug');
+
+        // 로그인 성공 판단 (YouTube 또는 Google 서비스로 이동)
+        if (currentUrl.includes('youtube.com') ||
+            currentUrl.includes('myaccount.google.com') ||
+            (currentUrl.includes('google.com') && !currentUrl.includes('accounts.google.com'))) {
+          this.log('✅ 2FA 자동 검증 성공 - 로그인 완료!', 'success');
+          return { success: true };
+        }
+
+        // 아직 로그인 페이지에 있는 경우
+        if (currentUrl.includes('accounts.google.com')) {
+          // TOTP 페이지가 아니면 다음 단계로 진행 중
+          if (!currentUrl.includes('/challenge/totp')) {
+            this.log('📄 TOTP 페이지 탈출 - 다음 단계 확인 중...', 'info');
+
+            // 페이지 타입 확인
+            try {
+              const pageType = await this.detectPageType(page);
+              this.log(`📄 감지된 페이지 타입: ${pageType}`, 'debug');
+
+              if (pageType === 'logged_in') {
+                this.log('✅ 2FA 인증 성공!', 'success');
+                return { success: true };
+              }
+
+              // 추가 인증이 필요한 경우
+              if (pageType === 'two_factor') {
+                this.log('⚠️ 추가 2FA 인증이 필요합니다', 'warning');
+                return { success: false, error: '추가 인증 필요' };
+              }
+            } catch (detectError) {
+              this.log(`⚠️ 페이지 타입 감지 실패: ${detectError.message}`, 'warning');
+            }
+          }
+        }
+
+        // 대기 후 재시도 (v2.31: 1초→2초)
+        await new Promise(r => setTimeout(r, 2000));
+
+      } catch (e) {
+        // 페이지 접근 실패는 네비게이션 진행 중일 수 있음
+        this.log(`⚠️ 페이지 접근 실패 (${attempt + 1}/5): ${e.message}`, 'warning');
+        await new Promise(r => setTimeout(r, 2500));  // v2.31: 1.5초→2.5초
+      }
+    }
+
+    // 최종 로그인 상태 확인
+    try {
+      const isLoggedIn = await this.checkLoginStatus(page);
+      if (isLoggedIn) {
+        this.log('✅ 최종 확인: 로그인 성공!', 'success');
+        return { success: true };
+      }
+    } catch (e) {
+      this.log(`⚠️ 최종 로그인 상태 확인 실패: ${e.message}`, 'warning');
+    }
+
+    this.log('❌ 2FA 인증 결과 확인 실패', 'error');
+    return { success: false, error: '2FA 인증 결과 확인 실패' };
+  }
+
+  /**
    * Next 버튼 찾기 및 클릭 (한국어/영어 지원)
    * ★★★ v2.17: 휴먼라이크 클릭 적용 ★★★
    */
@@ -1934,7 +2181,7 @@ class ImprovedAuthenticationService {
 
       for (const selector of idSelectors) {
         try {
-          const button = await page.waitForSelector(selector, { timeout: 1000 });
+          const button = await page.waitForSelector(selector, { timeout: 3000 });  // v2.31: 1초→3초
           if (button) {
             // 버튼 좌표 계산 후 휴먼라이크 클릭
             const coords = await button.boundingBox();
@@ -2263,10 +2510,10 @@ class ImprovedAuthenticationService {
       // 페이지 새로고침 시도
       this.log('🔄 페이지 새로고침 중...', 'info');
       console.log(chalk.blue('  🔄 페이지 새로고침 시도'));
-      
+
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 3000));
-      
+      await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
+
       // 새로고침 후 페이지 타입 확인
       const newPageType = await this.detectPageType(page);
       this.log(`새로고침 후 페이지 타입: ${newPageType}`, 'info');
@@ -2300,7 +2547,7 @@ class ImprovedAuthenticationService {
             navigationSuccess = true;
             console.log(chalk.green(`  ✅ 페이지 이동 성공 (${attempt}번째 시도)`));
 
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
 
             // 재접속 후 페이지 타입 확인
             finalPageType = await this.detectPageType(page);
@@ -2317,11 +2564,11 @@ class ImprovedAuthenticationService {
 
             if (navError.message.includes('ERR_CONNECTION_CLOSED') ||
                 navError.message.includes('ERR_NETWORK_CHANGED')) {
-              this.log('🔄 프록시 재연결 대기 중... (5초)', 'info');
-              console.log(chalk.gray('  ⏳ 프록시 재연결 대기 (5초)'));
-              await new Promise(r => setTimeout(r, 5000));
+              this.log('🔄 프록시 재연결 대기 중... (7초)', 'info');
+              console.log(chalk.gray('  ⏳ 프록시 재연결 대기 (7초)'));
+              await new Promise(r => setTimeout(r, 7000));  // v2.31: 5초→7초
             } else {
-              await new Promise(r => setTimeout(r, 2000));
+              await new Promise(r => setTimeout(r, 3000));  // v2.31: 2초→3초
             }
 
             if (attempt === 3) {
@@ -2691,7 +2938,7 @@ class ImprovedAuthenticationService {
       console.log(chalk.yellow('  ⚠️ 페이지 새로고침 시도'));
 
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
 
       // 새로고침 후 URL 확인
       const afterReloadUrl = page.url();
@@ -2708,7 +2955,7 @@ class ImprovedAuthenticationService {
         waitUntil: 'domcontentloaded',
         timeout: 30000
       });
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
 
       const finalUrl = page.url();
       if (!finalUrl.includes('unknownerror')) {
@@ -2779,7 +3026,7 @@ class ImprovedAuthenticationService {
         try {
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
           console.log(chalk.green(`  ✅ 새로고침 완료`));
-          await new Promise(r => setTimeout(r, 3000));
+          await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
 
           // 새로고침 후 다시 체크
           const stillError = await this.checkForBlackScreenOrSSLError(page);
@@ -3086,9 +3333,9 @@ class ImprovedAuthenticationService {
         // 클릭 성공 확인
         if (clicked) {
           console.log(chalk.green('  ✅ 패스키 등록을 건너뛰었습니다'));
-          
-          // 클릭 후 페이지 전환 대기
-          await new Promise(r => setTimeout(r, 3000));
+
+          // 클릭 후 페이지 전환 대기 (v2.31: 3초→4초)
+          await new Promise(r => setTimeout(r, 4000));
           
           // 건너뛰기 후 스크린샷
           try {
@@ -3115,8 +3362,8 @@ class ImprovedAuthenticationService {
                 waitUntil: 'domcontentloaded',
                 timeout: 30000
               });
-              await new Promise(r => setTimeout(r, 3000));
-              
+              await new Promise(r => setTimeout(r, 4000));  // v2.31: 3초→4초
+
               const finalUrl = page.url();
               if (finalUrl.includes('youtube.com')) {
                 this.log('✅ YouTube로 리다이렉션 성공', 'success');
@@ -3137,7 +3384,7 @@ class ImprovedAuthenticationService {
       this.log('⚠️ 건너뛰기 버튼을 찾을 수 없어 ESC 키를 시도합니다', 'warning');
       console.log(chalk.yellow('  ⚠️ ESC 키로 패스키 페이지 닫기 시도'));
       await page.keyboard.press('Escape');
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 2500));  // v2.31: 1.5초→2.5초
       
       // ESC 후 URL 확인
       const afterEscUrl = page.url();
@@ -3379,7 +3626,7 @@ class ImprovedAuthenticationService {
 
       if (buttonInfo.needsScroll) {
         this.log('스크롤 완료 대기 중...', 'debug');
-        await new Promise(r => setTimeout(r, 500));  // 스크롤 애니메이션 완료 대기
+        await new Promise(r => setTimeout(r, 800));  // v2.31: 500ms→800ms (스크롤 애니메이션 완료 대기)
 
         // 스크롤 후 좌표 재계산
         if (buttonInfo.selector) {
