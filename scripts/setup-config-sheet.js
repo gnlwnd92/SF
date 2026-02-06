@@ -1,7 +1,8 @@
 /**
  * Google Sheets '설정' 탭 초기화 스크립트
  *
- * 18개 설정 항목을 '설정' 시트에 직접 입력합니다.
+ * 25개 설정 항목을 '설정' 시트에 직접 입력합니다.
+ * (v2.16 자동화 탐지 우회 + v2.20 프록시 우회 + v2.34 Telegram 알림 포함)
  *
  * 실행: node scripts/setup-config-sheet.js
  */
@@ -54,6 +55,22 @@ const CONFIG_DATA = [
   // ▶ 잠금
   ['▶ 잠금', '', '', ''],
   ['LOCK_EXPIRY_MINUTES', '15', '좀비 잠금 만료 시간 (분)', ''],
+
+  // ▶ 자동화 탐지 우회 (v2.16)
+  ['▶ 자동화 탐지 우회', '', '', ''],
+  ['ENABLE_RANDOM_ENTRY', 'true', '랜덤 진입 경로 활성화 (자동화 탐지 우회)', ''],
+
+  // ▶ 프록시 우회 (v2.20)
+  ['▶ 프록시 우회', '', '', ''],
+  ['PROXY_RETRY_THRESHOLD', '1', 'N회 실패 시 다른 프록시로 우회', ''],
+
+  // ▶ Telegram 알림 (v2.34)
+  ['▶ Telegram 알림', '', '', ''],
+  ['TELEGRAM_NOTIFY_CRITICAL', 'true', '영구실패 알림 (만료/계정잠김/reCAPTCHA)', ''],
+  ['TELEGRAM_NOTIFY_PAYMENT_DELAY', 'true', '결제 미완료 24시간 초과 알림', ''],
+  ['TELEGRAM_NOTIFY_INFINITE_LOOP', 'true', '무한루프 감지 알림', ''],
+  ['TELEGRAM_NOTIFY_MAX_RETRY', 'true', '최대 재시도 초과 알림', ''],
+  ['TELEGRAM_NOTIFY_PAYMENT_ISSUE', 'true', '결제수단 문제 알림 (Action needed)', ''],
 ];
 
 async function main() {
@@ -183,8 +200,10 @@ async function main() {
     });
 
     console.log(`\n✅ 데이터 입력 완료!`);
-    console.log(`   - 총 ${CONFIG_DATA.length}개 행 (헤더 1 + 카테고리 6 + 설정 18 = 25행)`);
-    console.log(`   - 설정 항목: 18개`);
+    const categoryCount = CONFIG_DATA.filter(r => r[0].startsWith('▶')).length;
+    const settingTotal = CONFIG_DATA.length - 1 - categoryCount; // 헤더 1개 제외
+    console.log(`   - 총 ${CONFIG_DATA.length}개 행 (헤더 1 + 카테고리 ${categoryCount} + 설정 ${settingTotal})`);
+    console.log(`   - 설정 항목: ${settingTotal}개`);
   } catch (error) {
     console.error('❌ 데이터 입력 실패:', error.message);
     process.exit(1);

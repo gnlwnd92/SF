@@ -46,6 +46,7 @@ class ScheduledSubscriptionWorkerUseCase {
     timeFilterService,
     workerLockService,
     sharedConfig,              // [v2.15] Google Sheets '설정' 탭 기반 설정
+    telegramService,           // Telegram 알림 서비스
     logger
   }) {
     this.adsPowerAdapter = adsPowerAdapter;
@@ -56,6 +57,7 @@ class ScheduledSubscriptionWorkerUseCase {
     this.timeFilterService = timeFilterService;
     this.workerLockService = workerLockService;
     this.sharedConfig = sharedConfig;
+    this.telegramService = telegramService;
     this.logger = logger || console;
 
     // 실행 상태
@@ -92,18 +94,17 @@ class ScheduledSubscriptionWorkerUseCase {
     }
 
     // [v2.15] 설정값 우선순위: options > sharedConfig > WORKER_DEFAULTS
-    const getConfig = (key, fallback) => {
-      if (options[key] !== undefined) return options[key];
-      if (this.sharedConfig) return this.sharedConfig.get(key) ?? fallback;
-      return fallback;
-    };
+    // [v2.34] 인스턴스에 options 저장 → 매 사이클마다 최신값 조회 가능
+    this._executeOptions = options;
 
-    const resumeMinutesBefore = getConfig('RESUME_MINUTES_BEFORE', WORKER_DEFAULTS.resumeMinutesBefore);
-    const pauseMinutesAfter = getConfig('PAUSE_MINUTES_AFTER', WORKER_DEFAULTS.pauseMinutesAfter);
-    const maxRetryCount = getConfig('MAX_RETRY_COUNT', WORKER_DEFAULTS.maxRetryCount);
-    const checkIntervalSeconds = getConfig('CHECK_INTERVAL_SECONDS', WORKER_DEFAULTS.checkIntervalSeconds);
     const debugMode = options.debugMode ?? WORKER_DEFAULTS.debugMode;
     const continuous = options.continuous ?? WORKER_DEFAULTS.continuous;
+
+    // 시작 시 초기값 (헤더 출력용)
+    const resumeMinutesBefore = this._getLiveConfig('RESUME_MINUTES_BEFORE', WORKER_DEFAULTS.resumeMinutesBefore);
+    const pauseMinutesAfter = this._getLiveConfig('PAUSE_MINUTES_AFTER', WORKER_DEFAULTS.pauseMinutesAfter);
+    const maxRetryCount = this._getLiveConfig('MAX_RETRY_COUNT', WORKER_DEFAULTS.maxRetryCount);
+    const checkIntervalSeconds = this._getLiveConfig('CHECK_INTERVAL_SECONDS', WORKER_DEFAULTS.checkIntervalSeconds);
 
     // [v2.25] 윈도우 모드: 'focus' (포커싱) 또는 'background' (백그라운드)
     this.windowMode = options.windowMode || 'focus';
@@ -155,29 +156,21 @@ class ScheduledSubscriptionWorkerUseCase {
     try {
       if (continuous) {
         // 지속 실행 모드
+        // [v2.34] 매 사이클마다 SharedConfig에서 최신값 조회 (시트 변경 5분 내 반영)
         while (!this.shouldStop) {
-          await this.runCycle({
-            resumeMinutesBefore,
-            pauseMinutesAfter,
-            maxRetryCount,
-            debugMode
-          });
+          await this.runCycle({ debugMode });
 
           this.stats.cycles++;
 
           if (!this.shouldStop) {
-            // 다음 사이클까지 대기 (로그 없이 조용히)
-            await this.delay(checkIntervalSeconds * 1000);
+            // 다음 사이클까지 대기 (체크 간격도 최신값 사용)
+            const liveInterval = this._getLiveConfig('CHECK_INTERVAL_SECONDS', WORKER_DEFAULTS.checkIntervalSeconds);
+            await this.delay(liveInterval * 1000);
           }
         }
       } else {
         // 단일 실행 모드
-        await this.runCycle({
-          resumeMinutesBefore,
-          pauseMinutesAfter,
-          maxRetryCount,
-          debugMode
-        });
+        await this.runCycle({ debugMode });
         this.stats.cycles = 1;
       }
 
@@ -204,7 +197,17 @@ class ScheduledSubscriptionWorkerUseCase {
    * 단일 사이클 실행 (결제재개 먼저 → 일시중지 나중)
    */
   async runCycle(options) {
-    const { resumeMinutesBefore, pauseMinutesAfter, maxRetryCount, debugMode } = options;
+    const { debugMode } = options;
+
+    // [v2.34] 매 사이클마다 설정 동기화 (시트 변경 즉시 반영)
+    if (this.sharedConfig) {
+      await this.sharedConfig.sync();
+    }
+
+    // [v2.34] 동기화 직후 최신값 조회
+    const resumeMinutesBefore = this._getLiveConfig('RESUME_MINUTES_BEFORE', WORKER_DEFAULTS.resumeMinutesBefore);
+    const pauseMinutesAfter = this._getLiveConfig('PAUSE_MINUTES_AFTER', WORKER_DEFAULTS.pauseMinutesAfter);
+    const maxRetryCount = this._getLiveConfig('MAX_RETRY_COUNT', WORKER_DEFAULTS.maxRetryCount);
     const now = new Date();
 
     const timeStr = this.timeFilterService.formatDateTime(now);
@@ -466,6 +469,15 @@ class ScheduledSubscriptionWorkerUseCase {
         // 무한루프 감지 로그 출력 (상태 변경은 이미 위에서 처리됨)
         if (isInfiniteLoop) {
           this.logCritical('무한루프 감지', email, 'E열 수동체크-무한루프로 변경됨');
+
+          // Telegram 알림
+          if (this.telegramService) {
+            await this.telegramService.notifyError({
+              email, action: type, error: '무한루프 감지 - 동일 작업 3회+ 반복',
+              severity: 'critical', workerId: this.workerLockService?.getWorkerId?.(),
+              notificationType: 'infiniteLoop'
+            });
+          }
         }
 
       } else {
@@ -546,9 +558,20 @@ class ScheduledSubscriptionWorkerUseCase {
       const actionMap = {
         '만료됨': '구독 갱신 필요',
         '계정잠김': '수동 로그인 필요',
-        'reCAPTCHA차단': '수동 확인 필요'
+        'reCAPTCHA차단': '수동 확인 필요',
+        '결제수단문제': '결제 수단 업데이트 필요'
       };
       this.logCritical(permanentStatus, email, actionMap[permanentStatus] || '수동 확인 필요');
+
+      // Telegram 알림 (결제수단문제는 별도 유형으로 분리)
+      if (this.telegramService) {
+        const notificationType = permanentStatus === '결제수단문제' ? 'paymentIssue' : 'critical';
+        await this.telegramService.notifyError({
+          email, action: type, error: permanentStatus,
+          severity: 'critical', workerId: this.workerLockService?.getWorkerId?.(),
+          notificationType
+        });
+      }
       return;
     }
 
@@ -622,6 +645,15 @@ class ScheduledSubscriptionWorkerUseCase {
     this.stats[type].failed++;
     const errorMsg = (result.error || '알 수 없는 오류').substring(0, 40);
     this.log(chalk.red(`❌ ${email} 실패: ${errorMsg} (${newRetryCount}/${maxRetryCount})`));
+
+    // 최대 재시도 초과 시 Telegram 알림
+    if (newRetryCount >= maxRetryCount && this.telegramService) {
+      await this.telegramService.notifyError({
+        email, action: type, error: `최대 재시도 초과 (${maxRetryCount}회): ${errorMsg}`,
+        severity: 'high', workerId: this.workerLockService?.getWorkerId?.(),
+        notificationType: 'maxRetry'
+      });
+    }
   }
 
   /**
@@ -654,6 +686,13 @@ class ScheduledSubscriptionWorkerUseCase {
       result.error?.includes('reCAPTCHA') ||
       result.error?.includes('recaptcha')) {
       return 'reCAPTCHA차단';
+    }
+
+    // 결제 수단 문제 (Action needed - 복구 시도 실패)
+    if (result.error?.includes('PAYMENT_METHOD_ISSUE') ||
+      result.error?.includes('Action needed') ||
+      result.error?.includes('결제 수단 문제')) {
+      return '결제수단문제';
     }
 
     // 스킵 플래그 (다음으로 넘어가야 함)
@@ -725,6 +764,14 @@ class ScheduledSubscriptionWorkerUseCase {
 
       this.stats.pause.failed++;
       this.logCritical('결제 미완료 24시간 초과', email, '수동 확인 필요');
+
+      // Telegram 알림
+      if (this.telegramService) {
+        await this.telegramService.notifyPaymentDelay({
+          email, hoursElapsed: maxHours, workerId: this.workerLockService?.getWorkerId?.(),
+          notificationType: 'paymentDelay'
+        });
+      }
       return;
     }
 
@@ -935,6 +982,30 @@ class ScheduledSubscriptionWorkerUseCase {
     console.log(`[${this.getTimeStr()}] ⛔ 계정: ${account}`);
     console.log(`[${this.getTimeStr()}] ⛔ 조치: ${action}`);
     console.log(`[${this.getTimeStr()}] ${line}`);
+  }
+
+  /**
+   * [v2.34] 설정값 실시간 조회 헬퍼
+   * 우선순위: execute() options > SharedConfig 캐시 > WORKER_DEFAULTS
+   *
+   * SharedConfig는 5분마다 Google Sheets와 자동 동기화되므로,
+   * 시트에서 값을 변경하면 워커 재시작 없이 반영됩니다.
+   *
+   * @param {string} key - CONFIG_KEYS 상수
+   * @param {any} fallback - 기본값
+   * @returns {any} 설정값
+   */
+  _getLiveConfig(key, fallback) {
+    // 1. execute() 호출 시 명시적으로 전달된 옵션 (최우선)
+    if (this._executeOptions && this._executeOptions[key] !== undefined) {
+      return this._executeOptions[key];
+    }
+    // 2. SharedConfig 캐시 (5분마다 시트와 동기화)
+    if (this.sharedConfig) {
+      return this.sharedConfig.get(key) ?? fallback;
+    }
+    // 3. 하드코딩 기본값
+    return fallback;
   }
 
   /**

@@ -446,6 +446,7 @@ const BackupCardSheetRepository = require('./infrastructure/repositories/BackupC
 const BackupCardService = require('./services/BackupCardService');
 const YouTubePaymentAdapter = require('./infrastructure/adapters/YouTubePaymentAdapter');
 const ErrorClassifier = require('./utils/ErrorClassifier');
+const TelegramNotificationService = require('./services/TelegramNotificationService');
 const backupCardMultiLanguage = require('./infrastructure/config/backup-card-multilanguage');
 debugLog('[Container] Backup card modules loaded');
 
@@ -1260,6 +1261,17 @@ function setupContainer(initialConfig = {}) {
     // 백업카드 변경 관련 서비스 (Phase 1-7)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    // Telegram 알림 서비스 (통합워커 에러 알림)
+    telegramService: asFunction(() => {
+      return new TelegramNotificationService({
+        botToken: process.env.TELEGRAM_BOT_TOKEN,
+        chatId: process.env.TELEGRAM_CHAT_ID,
+        enabled: process.env.TELEGRAM_ENABLED !== 'false',
+        debugMode: config.debugMode || false,
+        sharedConfig: container.resolve('sharedConfig')
+      });
+    }).singleton(),
+
     // ErrorClassifier (백업카드 에러 분류)
     errorClassifier: asFunction(() => {
       return new ErrorClassifier();
@@ -1404,6 +1416,7 @@ function setupContainer(initialConfig = {}) {
         timeFilterService: container.resolve('timeFilterService'),
         workerLockService: container.resolve('workerLockService'),
         sharedConfig: container.resolve('sharedConfig'),  // 설정 서비스 주입
+        telegramService: container.resolve('telegramService'),  // Telegram 알림 서비스
         logger: container.resolve('logger')
       })),
 

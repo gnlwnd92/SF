@@ -284,6 +284,27 @@ class SharedConfig {
     return this.get(CONFIG_KEYS.LOCK_EXPIRY_MINUTES);
   }
 
+  // ▶ Telegram 알림 (유형별 ON/OFF)
+  isTelegramNotifyCritical() {
+    return this.get(CONFIG_KEYS.TELEGRAM_NOTIFY_CRITICAL);
+  }
+
+  isTelegramNotifyPaymentDelay() {
+    return this.get(CONFIG_KEYS.TELEGRAM_NOTIFY_PAYMENT_DELAY);
+  }
+
+  isTelegramNotifyInfiniteLoop() {
+    return this.get(CONFIG_KEYS.TELEGRAM_NOTIFY_INFINITE_LOOP);
+  }
+
+  isTelegramNotifyMaxRetry() {
+    return this.get(CONFIG_KEYS.TELEGRAM_NOTIFY_MAX_RETRY);
+  }
+
+  isTelegramNotifyPaymentIssue() {
+    return this.get(CONFIG_KEYS.TELEGRAM_NOTIFY_PAYMENT_ISSUE);
+  }
+
   // ============================================================
   // 디버그/진단 메서드
   // ============================================================

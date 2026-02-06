@@ -257,9 +257,9 @@ class EnterpriseCLI {
     // ═══════════════════════════════════════════════════════════
     // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
     // ═══════════════════════════════════════════════════════════
-    const VERSION = 'v2.33';
-    const VERSION_DATE = '2026-02-06 KST';
-    const VERSION_DESC = '통합워커 행 삭제 안전성 강화 (이메일 재검증)';
+    const VERSION = 'v2.34';
+    const VERSION_DATE = '2026-02-07 KST';
+    const VERSION_DESC = 'Telegram 알림 유형별 ON/OFF + 설정 실시간 반영';
     // ═══════════════════════════════════════════════════════════
 
     console.clear();
@@ -3189,7 +3189,7 @@ class EnterpriseCLI {
    */
   async scheduledWorker() {
     try {
-      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.15'));
+      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.34'));
       console.log(chalk.gray('─'.repeat(50)));
 
       // [v2.15] SharedConfig에서 설정값 로드
@@ -3207,14 +3207,28 @@ class EnterpriseCLI {
       const checkIntervalSeconds = sharedConfig.getCheckIntervalSeconds();
       const maxRetryCount = sharedConfig.getMaxRetryCount();
 
+      // [v2.34] Telegram 알림 설정 조회
+      const tgCritical = sharedConfig.isTelegramNotifyCritical();
+      const tgPaymentDelay = sharedConfig.isTelegramNotifyPaymentDelay();
+      const tgInfiniteLoop = sharedConfig.isTelegramNotifyInfiniteLoop();
+      const tgMaxRetry = sharedConfig.isTelegramNotifyMaxRetry();
+      const tgPaymentIssue = sharedConfig.isTelegramNotifyPaymentIssue();
+      const tgOnCount = [tgCritical, tgPaymentDelay, tgInfiniteLoop, tgMaxRetry, tgPaymentIssue].filter(Boolean).length;
+
       // 설정값 표시 (Google Sheets '설정' 탭 기준)
       console.log(chalk.cyan('  📋 현재 설정 (Google Sheets "설정" 탭 참조):'));
       console.log(chalk.white(`     • 결제재개: 결제 전 ${chalk.yellow(resumeMinutesBefore)}분에 "일시중지" → "결제중"`));
       console.log(chalk.white(`     • 일시중지: 결제 후 ${chalk.yellow(pauseMinutesAfter)}분에 "결제중" → "일시중지"`));
       console.log(chalk.white(`     • 체크 간격: ${chalk.yellow(checkIntervalSeconds)}초`));
       console.log(chalk.white(`     • 최대 재시도: ${chalk.yellow(maxRetryCount)}회`));
+
+      // [v2.34] Telegram 알림 상태 표시
+      const onOff = (v) => v ? chalk.green('ON') : chalk.red('OFF');
+      console.log(chalk.white(`     • Telegram 알림: ${chalk.yellow(tgOnCount)}/5 활성화`));
+      console.log(chalk.gray(`       영구실패=${onOff(tgCritical)} 결제지연=${onOff(tgPaymentDelay)} 무한루프=${onOff(tgInfiniteLoop)} 재시도초과=${onOff(tgMaxRetry)} 결제수단=${onOff(tgPaymentIssue)}`));
+
       console.log(chalk.gray('─'.repeat(50)));
-      console.log(chalk.gray('  💡 설정 변경: Google Sheets "설정" 탭에서 수정'));
+      console.log(chalk.gray('  💡 설정 변경: Google Sheets "설정" 탭에서 수정 (매 사이클 자동 반영)'));
       console.log(chalk.gray('  • 분산 워커: 여러 PC에서 동시 실행 가능'));
       console.log(chalk.gray('  • 지속 실행: 새 대상 자동 감지'));
       console.log(chalk.gray('  • 참조 탭: 통합워커'));
@@ -3282,7 +3296,7 @@ class EnterpriseCLI {
 
       // UseCase 실행 (설정값은 UseCase 내부에서 sharedConfig 참조)
       const modeLabel = windowMode === 'background' ? '백그라운드' : '포커싱';
-      console.log(chalk.green(`\n🚀 시간체크 통합 워커 v2.25 시작... [${modeLabel} 모드]\n`));
+      console.log(chalk.green(`\n🚀 시간체크 통합 워커 v2.34 시작... [${modeLabel} 모드]\n`));
 
       const scheduledWorkerUseCase = this.container.resolve('scheduledSubscriptionWorkerUseCase');
 
