@@ -51,13 +51,19 @@ DEBUG_STARTUP=true npm start      # 컨테이너 시작 로그 출력
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Presentation Layer                                 │
-│  └─ src/presentation/cli/EnterpriseCLI.js          │
+│  └─ src/presentation/cli/                          │
+│     ├─ EnterpriseCLI.js            # 메인 CLI     │
+│     ├─ ImprovedEnterpriseCLI.js    # 개선 CLI     │
+│     └─ BatchMonitorDashboard.js    # 배치 대시보드 │
 ├─────────────────────────────────────────────────────┤
 │  Application Layer (UseCases)                       │
 │  └─ src/application/usecases/                      │
 │     ├─ EnhancedPauseSubscriptionUseCase.js         │
 │     ├─ EnhancedResumeSubscriptionUseCase.js        │
-│     └─ ScheduledSubscriptionWorkerUseCase.js  # 통합워커 │
+│     ├─ ScheduledSubscriptionWorkerUseCase.js  # 통합워커 │
+│     ├─ BackupCardChangeUseCase.js  # 백업카드 변경 │
+│     ├─ EnhancedBatchProcessingUseCase.js  # 배치처리 │
+│     └─ ParallelFamilyPlanCheckUseCase.js  # 병렬체크 │
 ├─────────────────────────────────────────────────────┤
 │  Domain Layer                                       │
 │  └─ src/domain/ (entities/, services/)             │
@@ -66,12 +72,17 @@ DEBUG_STARTUP=true npm start      # 컨테이너 시작 로그 출력
 │  ├─ adapters/                                      │
 │  │   ├─ AdsPowerAdapter.js         # 브라우저 제어 │
 │  │   ├─ HumanLikeMouseHelper.js    # 베지어 곡선  │
-│  │   └─ CDPClickHelper.js          # CDP 클릭     │
+│  │   ├─ CDPClickHelper.js          # CDP 클릭     │
+│  │   └─ YouTubePaymentAdapter.js   # 결제 어댑터  │
 │  ├─ repositories/                                  │
 │  │   ├─ EnhancedGoogleSheetsRepository.js         │
-│  │   └─ PauseSheetRepository.js    # 통합워커 탭  │
+│  │   ├─ PauseSheetRepository.js    # 통합워커 탭  │
+│  │   ├─ ProxySheetRepository.js    # 프록시 탭    │
+│  │   ├─ ConfigRepository.js        # 설정 탭      │
+│  │   └─ BackupCardSheetRepository.js # 백업카드   │
 │  └─ config/                                        │
-│      └─ multilanguage.js           # 다국어 UI    │
+│      ├─ multilanguage.js           # 다국어 UI    │
+│      └─ backup-card-multilanguage.js # 백업카드 다국어 │
 ├─────────────────────────────────────────────────────┤
 │  Services (횡단 관심사)                             │
 │  └─ src/services/                                  │
@@ -79,17 +90,29 @@ DEBUG_STARTUP=true npm start      # 컨테이너 시작 로그 출력
 │      ├─ EnhancedDateParsingService.js  # 날짜 파싱 │
 │      ├─ WorkerLockService.js       # 분산 잠금    │
 │      ├─ HashBasedProxyMappingService.js  # 프록시 │
-│      └─ SharedConfig.js            # 설정 캐싱    │
+│      ├─ SharedConfig.js            # 설정 캐싱    │
+│      ├─ SessionLogService.js       # 세션 로그    │
+│      ├─ TimeFilterService.js       # 시간 필터링  │
+│      └─ BackupCardService.js       # 백업카드     │
 └─────────────────────────────────────────────────────┘
 ```
 
 **핵심 파일**:
 | 파일 | 역할 |
 |------|------|
+| `index.js` | 진입점: .env 로드 → config 생성 → CLI 시작, SIGINT/SIGTERM 핸들러 |
 | `src/container.js` | Awilix DI 컨테이너 (새 서비스 등록 필수) |
-| `src/config/workerDefaults.js` | 통합워커 기본값 |
-| `src/config/configKeys.js` | 설정 키 상수/기본값/타입 정의 |
+| `src/config/workerDefaults.js` | 통합워커 기본값 (Single Source of Truth) |
+| `src/config/configKeys.js` | 설정 키 상수/기본값/타입 정의 (20개 항목) |
 | `src/infrastructure/config/multilanguage.js` | 다국어 UI 텍스트 (15개 언어) |
+| `src/utils/ErrorClassifier.js` | 에러 분류 (백업카드 등) |
+
+**Container 모듈 로드 순서** (`src/container.js`):
+1. Repository Fallback 체인: `EnhancedGoogleSheetsRepository` → `SimpleGoogleSheetsRepository` → `MockGoogleSheetsRepository`
+2. Mock 모드 (`USE_MOCK_REPOSITORY=true`): Simple/Mock 직접 사용
+3. Service Account 미존재 시: 자동으로 Mock Fallback
+4. `lazyRequire()`: 실제 사용 시점에 `require()` 호출 (성능 최적화)
+5. `createLazyRepository()`: Proxy 패턴으로 첫 메서드 호출 시 `initialize()` 자동 실행
 
 ## Critical Implementation Rules
 
@@ -347,6 +370,13 @@ myUseCase: asClass(MyUseCase).inject(() => ({
 3. UseCase의 `buttonPriority` 배열에 추가
 4. `npm run verify:dates` 실행
 
+### 백업카드 변경 시스템 (Phase 1-7)
+백업카드 변경은 별도의 UseCase/Adapter/Repository/Service 체계:
+1. `BackupCardChangeUseCase` → `YouTubePaymentAdapter` → `BackupCardService`
+2. `BackupCardSheetRepository`: Google Sheets '백업카드' 탭 CRUD
+3. `backup-card-multilanguage.js`: 결제 페이지 전용 다국어 텍스트
+4. `ErrorClassifier`: 백업카드 에러 자동 분류
+
 ### 포커싱/백그라운드 모드
 통합워커 시작 시 선택 가능:
 - **포커싱 모드**: 브라우저 창이 앞에 표시 (모니터링용, 권장)
@@ -354,9 +384,23 @@ myUseCase: asClass(MyUseCase).inject(() => ({
 
 CDP를 통해 윈도우 포커스와 무관하게 마우스/키보드 이벤트 정상 동작.
 
+### 병렬 배치 처리 (Day 9-10)
+`ParallelBatchProcessor` + `RealTimeMonitoringDashboard` + `ParallelFamilyPlanCheckUseCase`
+- 최대 동시 실행 수: `config.maxConcurrency` (기본 5)
+- blessed-contrib 기반 실시간 모니터링 대시보드
+
 ## 애플리케이션 진입점
 
-`index.js` → `src/presentation/cli/EnterpriseCLI.js`
+`index.js` → `src/presentation/cli/EnterpriseCLI.js` (또는 `--improved` 시 `ImprovedEnterpriseCLI.js`)
+
+**`index.js` 초기화 흐름**:
+1. `TerminalLogger` 초기화 (비동기)
+2. `.env` 파일 로드 (없으면 즉시 종료)
+3. 필수 디렉터리 생성 (`credentials`, `logs/*`, `screenshots`, `backup`, `temp`)
+4. 필수 환경 변수 검증 (`ADSPOWER_API_URL`, `GOOGLE_SHEETS_ID`)
+5. CLI 모듈 로드 (일반/개선 선택)
+6. SIGINT/SIGTERM 핸들러 등록 (GracefulShutdown)
+7. `cli.run()` 실행
 
 CLI 모드별 실행:
 ```bash
@@ -365,7 +409,8 @@ node index.js --mode pause       # 일시중지 워크플로우
 node index.js --mode resume      # 재개 워크플로우
 node index.js --mode check       # 상태 확인
 node index.js --mode txt-backup  # TXT 백업
-node index.js --improved         # 개선된 CLI
+node index.js --improved         # 개선된 CLI (USE_IMPROVED_CLI=true 와 동일)
+node index.js --mode renewal-check-pause  # 갱신확인 일시정지
 ```
 
 ## 주요 서비스 역할
@@ -379,3 +424,10 @@ node index.js --improved         # 개선된 CLI
 | `SharedConfig` | Google Sheets '설정' 탭 기반 동적 설정 (5분 캐시) |
 | `WorkerLockService` | 분산 PC 작업 충돌 방지 (J열 잠금) |
 | `HashBasedProxyMappingService` | 이메일 → 프록시 결정론적 매핑 |
+| `SessionLogService` | 세션별 스크린샷 + 로그 통합 관리 |
+| `TimeFilterService` | KST 기준 시간 조건 필터링 (통합워커용) |
+| `ConfigRepository` | Google Sheets '설정' 탭 CRUD |
+| `BackupCardService` | 백업카드 변경 워크플로우 지원 |
+| `AntiCaptchaService` | 이미지 CAPTCHA 자동/수동 해결 |
+| `BatchJobManager` | 배치 작업 싱글톤 관리자 |
+| `TerminalLogger` | 터미널 출력 JSON 로깅 (48시간 보관, `index.js`에서 초기화) |
