@@ -1054,6 +1054,7 @@ function setupContainer(initialConfig = {}) {
           familyPlanDetectionService: container.resolve('familyPlanDetectionService'),
           authService: container.resolve('authService'),
           hashProxyMapper: container.resolve('hashProxyMapper'),  // 프록시 시트에서 프록시 가져오기
+          proxyManager: container.resolve('proxyManager'),        // 프록시 풀 상태 확인용
           logger: container.resolve('logger'),
           config: container.resolve('config')
         }))

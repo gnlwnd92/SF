@@ -1,5 +1,5 @@
 /**
- * ScheduledSubscriptionWorkerUseCase v2.14 - 통합워커 상태 기반 결제 주기 관리
+ * ScheduledSubscriptionWorkerUseCase v2.33 - 통합워커 상태 기반 결제 주기 관리
  *
  * 워크플로우:
  * [일시중지 상태] → 결제 시간 임박(now + M분) → 결제재개 → [결제중 상태]
@@ -13,6 +13,11 @@
  * - J열 잠금으로 충돌 방지
  * - N열/O열 결제 미완료 재시도 시간 관리 (v2.14)
  * - 지속 실행 모드 (Ctrl+C로 안전 종료)
+ *
+ * v2.33 변경사항:
+ * - 매번 읽기 방식: 각 작업 처리 직전 refreshTaskByEmail()로 시트 재조회
+ * - 이메일 재검증: processTask()에서 잠금 후 rowIndex의 이메일이 일치하는지 확인
+ * - 행 삭제로 인한 rowIndex 불일치 시 다른 계정에 결과 기록하는 문제 방지
  *
  * v2.14 변경사항:
  * - 결제 미완료 감지 및 시간 기반 24시간 재시도 시스템
@@ -256,20 +261,62 @@ class ScheduledSubscriptionWorkerUseCase {
       // 5. 결제재개 먼저 처리 (결제 허용이 더 급함)
       for (const task of resumeTargets) {
         if (this.shouldStop) break;
-        await this.processTask(task, 'resume', maxRetryCount, debugMode);
+
+        // [v2.33] 매번 시트 재조회 - 행 삭제로 인한 rowIndex 불일치 방지
+        const freshTask = await this.refreshTaskByEmail(task.email);
+        if (!freshTask) {
+          this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (시트에서 삭제됨)`));
+          this.stats.resume.skipped++;
+          continue;
+        }
+        if (freshTask.status !== '일시중지') {
+          if (debugMode) this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (상태 변경: ${task.status} → ${freshTask.status})`));
+          this.stats.resume.skipped++;
+          continue;
+        }
+
+        await this.processTask(freshTask, 'resume', maxRetryCount, debugMode);
       }
 
       // 6. 일시중지 처리
       for (const task of pauseTargets) {
         if (this.shouldStop) break;
-        await this.processTask(task, 'pause', maxRetryCount, debugMode);
+
+        // [v2.33] 매번 시트 재조회 - 행 삭제로 인한 rowIndex 불일치 방지
+        const freshTask = await this.refreshTaskByEmail(task.email);
+        if (!freshTask) {
+          this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (시트에서 삭제됨)`));
+          this.stats.pause.skipped++;
+          continue;
+        }
+        if (freshTask.status !== '결제중') {
+          if (debugMode) this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (상태 변경: ${task.status} → ${freshTask.status})`));
+          this.stats.pause.skipped++;
+          continue;
+        }
+
+        await this.processTask(freshTask, 'pause', maxRetryCount, debugMode);
       }
 
       // 7. [v2.14] 결제 미완료 재시도 대상 처리 (일시중지 작업으로)
       for (const task of pendingRetryTargets) {
         if (this.shouldStop) break;
-        this.log(chalk.yellow(`🔄 ${task.email || task.googleId} 결제미완료 재시도 중...`));
-        await this.processTask(task, 'pause', maxRetryCount, debugMode);
+
+        // [v2.33] 매번 시트 재조회 - 행 삭제로 인한 rowIndex 불일치 방지
+        const freshTask = await this.refreshTaskByEmail(task.email);
+        if (!freshTask) {
+          this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (시트에서 삭제됨)`));
+          this.stats.pause.skipped++;
+          continue;
+        }
+        if (!freshTask.pendingRetryAt) {
+          if (debugMode) this.log(chalk.gray(`   ⏭️ ${task.email} 스킵 (결제미완료 재시도 조건 해제)`));
+          this.stats.pause.skipped++;
+          continue;
+        }
+
+        this.log(chalk.yellow(`🔄 ${freshTask.email || freshTask.googleId} 결제미완료 재시도 중...`));
+        await this.processTask(freshTask, 'pause', maxRetryCount, debugMode);
       }
 
       // 8. 사이클 요약 (작업이 있었을 때만)
@@ -322,6 +369,16 @@ class ScheduledSubscriptionWorkerUseCase {
     // [v2.26] 상태 재검증 - Race Condition 방지
     // 잠금 획득 후, 실제 작업 전에 최신 상태를 다시 확인
     const freshTask = await this.sheetsRepository.getIntegratedWorkerTaskByRow(rowIndex);
+
+    // [v2.33] 이메일 재검증 - 행 삭제로 인한 rowIndex 불일치 방지
+    if (freshTask && freshTask.email !== task.email) {
+      this.log(chalk.red(`   ⛔ ${email} 스킵 (행 불일치: row ${rowIndex}의 이메일이 ${freshTask.email}로 변경됨)`));
+      await this.workerLockService.releaseIntegratedWorkerLock(rowIndex);
+      this.currentTaskRowIndex = null;
+      this.stats[type].skipped++;
+      return;
+    }
+
     if (freshTask && freshTask.status !== task.status) {
       this.log(chalk.yellow(`   ⏭️ ${email} 스킵 (상태 변경됨: ${task.status} → ${freshTask.status})`));
       await this.workerLockService.releaseIntegratedWorkerLock(rowIndex);
@@ -885,6 +942,25 @@ class ScheduledSubscriptionWorkerUseCase {
    */
   delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * [v2.33] 이메일로 시트에서 최신 행 정보를 재조회
+   *
+   * 사이클 시작 시 읽은 rowIndex가 행 삭제로 어긋날 수 있으므로,
+   * 작업 처리 직전에 이메일 기준으로 최신 데이터를 다시 가져옵니다.
+   *
+   * @param {string} email - 조회할 이메일 주소
+   * @returns {Promise<Object|null>} 최신 task 객체 또는 null
+   */
+  async refreshTaskByEmail(email) {
+    try {
+      const allTasks = await this.sheetsRepository.getIntegratedWorkerTasks();
+      return allTasks.find(t => t.email === email) || null;
+    } catch (error) {
+      this.logger.error(`[IntegratedWorker] 시트 재조회 실패: ${error.message}`);
+      return null;
+    }
   }
 
   /**

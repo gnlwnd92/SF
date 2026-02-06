@@ -32,6 +32,7 @@ class EnhancedFamilyPlanCheckUseCase {
     familyPlanDetectionService,
     authService,
     hashProxyMapper,  // 프록시 시트에서 프록시 가져오기
+    proxyManager,     // 프록시 풀 상태 확인용
     logger,
     config
   }) {
@@ -41,6 +42,7 @@ class EnhancedFamilyPlanCheckUseCase {
     this.familySheets = familyPlanSheetRepository;
     this.detector = familyPlanDetectionService;
     this.hashProxyMapper = hashProxyMapper;  // 프록시 시트 서비스
+    this.proxyManager = proxyManager;        // 프록시 관리자
     this.logger = logger;
     this.config = config;
     
@@ -57,11 +59,14 @@ class EnhancedFamilyPlanCheckUseCase {
       apiUrl: this.adsPower.apiUrl || process.env.ADSPOWER_API_URL
     });
     
-    // 프록시 상태 확인
-    const proxyStatus = getProxyPoolStatus();
+    // 프록시 상태 확인 (proxyManager가 있을 경우에만)
+    const proxyStatus = this.proxyManager?.getPoolStatus?.() || {
+      kr: { total: 0, available: 0, portRange: 'N/A' },
+      us: { total: 0, available: 0, portRange: 'N/A' }
+    };
     console.log(chalk.cyan('🌐 프록시 풀 상태:'));
-    console.log(chalk.gray(`  한국: ${proxyStatus.kr.total}개 (${proxyStatus.kr.portRange})`));
-    console.log(chalk.gray(`  미국: ${proxyStatus.us.total}개 (${proxyStatus.us.portRange}) - 가족요금제 확인용`));
+    console.log(chalk.gray(`  한국: ${proxyStatus.kr?.total || 0}개 (${proxyStatus.kr?.portRange || 'N/A'})`));
+    console.log(chalk.gray(`  미국: ${proxyStatus.us?.total || 0}개 (${proxyStatus.us?.portRange || 'N/A'}) - 가족요금제 확인용`));
     
     // 스크린샷 디버깅 서비스 초기화
     this.screenshotDebug = new ScreenshotDebugService({

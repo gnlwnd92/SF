@@ -257,9 +257,9 @@ class EnterpriseCLI {
     // ═══════════════════════════════════════════════════════════
     // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
     // ═══════════════════════════════════════════════════════════
-    const VERSION = 'v2.32';
-    const VERSION_DATE = '2026-01-08 KST';
-    const VERSION_DESC = 'OTP 다음 버튼 클릭 개선 (JS click + Enter 폴백)';
+    const VERSION = 'v2.33';
+    const VERSION_DATE = '2026-02-06 KST';
+    const VERSION_DESC = '통합워커 행 삭제 안전성 강화 (이메일 재검증)';
     // ═══════════════════════════════════════════════════════════
 
     console.clear();
