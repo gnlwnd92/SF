@@ -477,7 +477,10 @@ class EnhancedResumeSubscriptionUseCase {
       await this.captureStepScreenshot('10_status_check', `상태확인: ${currentStatus.isActive ? '활성' : (currentStatus.isPausedScheduled ? '중지예약' : '중지됨')}`);
 
       // 이미 활성 상태인 경우
-      if (currentStatus.isActive && !currentStatus.isPausedScheduled) {
+      // ★ v2.35: requiresManualCheck가 설정된 경우 "이미 활성"으로 단정하지 않음
+      // 패널 로딩 미완료 시 버튼이 없어 isActive=true로 추정되지만
+      // 실제로는 일시중지 상태일 수 있으므로 수동 체크 경로로 분기
+      if (currentStatus.isActive && !currentStatus.isPausedScheduled && !currentStatus.requiresManualCheck) {
         this.log('이미 활성 상태입니다', 'warning');
         result.status = 'already_active';
         result.success = true;
@@ -2561,8 +2564,76 @@ class EnhancedResumeSubscriptionUseCase {
       spinnerWaitTime += spinnerCheckInterval;
     }
 
+    // ★ v2.35: 스피너 타임아웃 추적 - 상태 판단 신뢰도에 영향
+    let spinnerTimedOut = false;
     if (spinnerWaitTime >= maxSpinnerWait) {
-      this.log(`⚠️ 스피너 대기 타임아웃 (${maxSpinnerWait}ms) - 계속 진행`, 'warning');
+      spinnerTimedOut = true;
+      this.log(`⚠️ 스피너 대기 타임아웃 (${maxSpinnerWait}ms) - 패널 재시도 시작`, 'warning');
+
+      // ★ v2.35: 패널 닫기 → 다시 열기로 재시도 (1회)
+      // 패널 내용이 미로드 상태에서 상태 판단하면 오판 위험이 높음
+      try {
+        this.log('🔄 패널 재시도: Manage 버튼 토글 (닫기 → 열기)', 'info');
+
+        // 패널 닫기
+        await this.clickManageButton();
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 패널 다시 열기
+        await this.clickManageButton();
+        await new Promise(r => setTimeout(r, 5000));
+
+        // DOM 안정화 대기
+        try {
+          await this.page.waitForFunction(
+            () => document.readyState === 'complete',
+            { timeout: 10000 }
+          );
+        } catch (e) { /* 타임아웃 무시 */ }
+
+        // 두 번째 스피너 대기 (20초 - 첫 시도보다 여유있게)
+        const retryMaxWait = 20000;
+        let retryWaitTime = 0;
+        while (retryWaitTime < retryMaxWait) {
+          const hasSpinner = await this.page.evaluate(() => {
+            const selectors = [
+              '.spinner', '.loading', '[aria-busy="true"]',
+              '.yt-spinner', 'tp-yt-paper-spinner',
+              '.ytd-spinner', 'paper-spinner', 'paper-spinner-lite'
+            ];
+            for (const sel of selectors) {
+              const els = document.querySelectorAll(sel);
+              for (const el of els) {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          });
+
+          if (!hasSpinner) {
+            this.log(`✅ 재시도 후 스피너 소멸 확인 (${retryWaitTime}ms 대기 후)`, 'success');
+            spinnerTimedOut = false;
+            break;
+          }
+
+          if (retryWaitTime % 5000 === 0) {
+            this.log(`⏳ 재시도 스피너 대기 중... (${retryWaitTime}ms)`, 'debug');
+          }
+          await new Promise(r => setTimeout(r, 500));
+          retryWaitTime += 500;
+        }
+
+        if (retryWaitTime >= retryMaxWait) {
+          this.log('⚠️ 재시도에서도 스피너 타임아웃 - 불완전 상태로 진행', 'warning');
+        }
+      } catch (retryError) {
+        this.log(`⚠️ 패널 재시도 중 오류 (무시): ${retryError.message}`, 'warning');
+      }
     }
 
     // 스피너 소멸 후 추가 안정화 대기
@@ -2638,6 +2709,14 @@ class EnhancedResumeSubscriptionUseCase {
     this.log(`  - 가시적 버튼: ${expansionResult.visibleButtonCount}개`, 'info');
     if (expansionResult.foundIndicators.length > 0) {
       this.log(`  - 확장 지표: ${expansionResult.foundIndicators.join(', ')}`, 'info');
+    }
+
+    // ★ v2.35: 스피너 타임아웃 + buttonCount 전용 감지 = 패널 내용 미로드 가능성 높음
+    // 사이드바 버튼(Home, Shorts 등)이 5개 초과하므로 buttonCount만으로는 패널 확장을 신뢰할 수 없음
+    // 이 경우 downstream 상태 판단에서 requiresManualCheck가 설정될 것을 예상
+    if (spinnerTimedOut && expansionResult.method === 'buttonCount') {
+      this.log('⚠️ 스피너 타임아웃 + buttonCount 전용 감지 - 패널 내용 미로드 가능성 높음', 'warning');
+      this.log('  → Resume/Pause 버튼이 렌더링되지 않았을 수 있으며, 상태 판단이 부정확할 수 있음', 'warning');
     }
 
     // 상태 확인 - 개선된 버튼 확인 로직
