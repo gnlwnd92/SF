@@ -449,6 +449,8 @@ ${resultEmoji} ${resultLabel}
         language: details.language || null,
         profileId: this.session.profileId
       },
+      // ★ v2.36: 상태 판단 진단 정보 (사후 분석용)
+      diagnostics: details.diagnostics || null,
       screenshots: this.session.screenshots,
       logs: this.session.logs
     };

@@ -526,6 +526,24 @@ class EnhancedPauseSubscriptionUseCase {
         };
       }
 
+      // [v2.36] 결제 상태 검증 불가 시 보수적으로 재시도 대기
+      // Manage 버튼 미확장 + 결제일 미확인 → 결제미완료 여부 판단 불가
+      // 잘못된 일시중지 방지를 위해 payment_pending으로 처리
+      if (currentStatus.cannotVerifyPaymentStatus) {
+        this.log('⚠️ 결제 상태 검증 불가 (Manage 버튼 미확장) - 보수적으로 재시도 대기', 'warning');
+        return {
+          success: false,
+          status: 'payment_pending',
+          error: '결제 상태 검증 불가: 멤버십 관리 페이지 확장 실패',
+          paymentPendingReason: '멤버십 관리 페이지 확장 실패',
+          nextBillingDate: null,
+          language: this.currentLanguage,
+          message: '결제 상태 검증 불가 - 멤버십 관리 페이지 확장 실패',
+          browserIP: result.browserIP,
+          proxyId: result.proxyId
+        };
+      }
+
       // 이미 일시중지 상태인 경우
       if (currentStatus.isPaused) {
         this.log('이미 일시중지 상태입니다', 'warning');
@@ -2237,7 +2255,23 @@ class EnhancedPauseSubscriptionUseCase {
           throw new Error('SUBSCRIPTION_EXPIRED');
         }
       } else {
-        this.log('Manage 버튼을 찾을 수 없음 - 현재 상태로 진행', 'warning');
+        // [v2.36] Manage 버튼 1차 탐색 실패 → clickManageButton()으로 강화 재시도
+        // 페이지 로딩 타이밍으로 인해 버튼이 아직 렌더링되지 않았을 수 있음
+        this.log('Manage 버튼 1차 탐색 실패 - clickManageButton()으로 재시도', 'warning');
+        const retryResult = await this.clickManageButton();
+        if (retryResult) {
+          this.managementPageOpened = true;
+          this.log('Manage 버튼 재시도 성공', 'success');
+
+          // 재시도 성공 후 만료 상태 확인
+          const expiredCheckRetry = await enhancedButtonService.checkSubscriptionExpired(this.page, true);
+          if (expiredCheckRetry.isExpired) {
+            this.log(`⚠️ 구독이 만료됨: ${expiredCheckRetry.indicator}`, 'warning');
+            throw new Error('SUBSCRIPTION_EXPIRED');
+          }
+        } else {
+          this.log('Manage 버튼 재시도도 실패 - 결제 상태 검증 불가', 'warning');
+        }
       }
     }
 
@@ -2390,6 +2424,14 @@ class EnhancedPauseSubscriptionUseCase {
       // pauseDate가 없고 일시중지 상태인 경우에만 재개일을 다음 결제일로 사용 (fallback)
       status.nextBillingDate = status.pausedUntilDate;
       this.log(`📌 일시중지일이 없어서 재개일을 다음 결제일로 설정 (fallback): ${status.nextBillingDate}`, 'info');
+    }
+
+    // [v2.36] Manage 버튼 미확장 + 결제일 미확인 → 결제 상태 검증 불가
+    // Manage 버튼을 클릭하지 못해 결제일을 읽을 수 없으면
+    // 결제미완료 여부를 판단할 수 없으므로 보수적으로 처리
+    if (!this.managementPageOpened && !status.isPaused && !status.nextBillingDate) {
+      status.cannotVerifyPaymentStatus = true;
+      this.log('⚠️ 멤버십 관리 미확장 + 결제일 미확인 → 결제 상태 검증 불가', 'warning');
     }
 
     // [v2.14] 결제 미완료 감지 - Pause 버튼 클릭 전에 판단

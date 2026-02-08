@@ -473,6 +473,11 @@ class EnhancedResumeSubscriptionUseCase {
 
       const currentStatus = await this.checkCurrentStatus(browser);
 
+      // ★ v2.36: 진단 정보를 result에 첨부 (meta.json 기록용)
+      if (currentStatus._diagnostics) {
+        result._diagnostics = currentStatus._diagnostics;
+      }
+
       // [v2.15] 상태 확인 후 스크린샷
       await this.captureStepScreenshot('10_status_check', `상태확인: ${currentStatus.isActive ? '활성' : (currentStatus.isPausedScheduled ? '중지예약' : '중지됨')}`);
 
@@ -532,12 +537,14 @@ class EnhancedResumeSubscriptionUseCase {
 
         // 수동 체크가 필요한 케이스 처리
         if (currentStatus.requiresManualCheck) {
-          this.log('⚠️ 페이지 로딩 중 또는 불완전한 상태 - 수동 체크 필요', 'warning');
-          result.status = '일시중지';  // 상태를 일시중지로 설정
+          const reason = currentStatus.debugInfo?.reason || '불완전한 상태';
+          this.log(`⚠️ 수동 체크 필요 - ${reason}`, 'warning');
+          // ★ v2.36: "일시중지"가 아닌 명확한 상태라벨 사용 (실제 상태 불확실)
+          result.status = '수동체크-로딩불완전';
           result.success = false;
-          result.error = '수동 체크 필요';
+          result.error = `수동 체크 필요: ${reason}`;
           result.needsManualCheck = true;
-          result.manualCheckReason = '페이지 로딩 중 또는 불완전한 상태로 인해 자동 처리 불가';
+          result.manualCheckReason = reason;
 
           // 스크린샷 촬영 전 Manage 버튼 클릭하여 확장 영역 열기
           try {
@@ -875,7 +882,9 @@ class EnhancedResumeSubscriptionUseCase {
         errorType: result.timedOut ? 'timeout' : (result.skippedDueToStagnation ? 'stagnation' : 'unknown'),
         errorStep: result.status,
         language: this.currentLanguage,
-        resultType
+        resultType,
+        // ★ v2.36: 진단 정보 전달 (meta.json 기록)
+        diagnostics: result._diagnostics || null
       });
     }
 
@@ -2570,6 +2579,9 @@ class EnhancedResumeSubscriptionUseCase {
       spinnerTimedOut = true;
       this.log(`⚠️ 스피너 대기 타임아웃 (${maxSpinnerWait}ms) - 패널 재시도 시작`, 'warning');
 
+      // ★ v2.36: 스피너 타임아웃 시점 스크린샷 (사후 분석용 - 패널 미로드 상태 증거 보존)
+      await this.captureStepScreenshot('10a_spinner_timeout', `스피너타임아웃 ${maxSpinnerWait}ms`);
+
       // ★ v2.35: 패널 닫기 → 다시 열기로 재시도 (1회)
       // 패널 내용이 미로드 상태에서 상태 판단하면 오판 위험이 높음
       try {
@@ -3246,9 +3258,43 @@ class EnhancedResumeSubscriptionUseCase {
       // Resume 또는 Pause 버튼이 있으면 정상 페이지로 간주 - 로딩 체크 건너뜀
       this.log(`✅ 정상 페이지 - Resume 버튼: ${status.hasResumeButton}, Pause 버튼: ${status.hasPauseButton}`, 'info');
     }
-    
-    this.log(`상태 확인 - 활성: ${status.isActive}, 일시중지: ${status.isPaused}, 일시정지 예약: ${status.isPausedScheduled}, Resume 버튼: ${status.hasResumeButton}`, 'info');
-    
+
+    // ★ v2.36: Defense in depth - 스피너타임아웃 + buttonCount 전용감지 시 requiresManualCheck 강제
+    // 사이드바 버튼(Home, Shorts 등)이 5개 초과하므로 buttonCount만으로는 패널 확장을 신뢰할 수 없음
+    // 케이스 4-2에서 이미 설정될 수 있지만, 다른 경로로 빠져도 보호되도록 상위에서 강제
+    if (spinnerTimedOut && expansionResult.method === 'buttonCount' && !status.hasResumeButton && !status.hasPauseButton) {
+      if (!status.requiresManualCheck) {
+        status.requiresManualCheck = true;
+        status.debugInfo = status.debugInfo || {};
+        status.debugInfo.reason = 'spinnerTimeout+buttonCount: 패널 내용 미로드 상태에서 상태 판단 불가';
+        this.log('⚠️ [v2.36] 스피너타임아웃 + buttonCount 전용감지 → requiresManualCheck 강제 설정', 'warning');
+      }
+    }
+
+    // ★ v2.36: 상태 판단 컨텍스트를 status 객체에 첨부 (사후 분석 및 meta.json 기록용)
+    status._diagnostics = {
+      spinnerTimedOut,
+      expansionMethod: expansionResult.method,
+      expansionButtonCount: expansionResult.visibleButtonCount,
+      expansionIndicators: expansionResult.foundIndicators || [],
+      statusCase: status.status || 'unknown',
+      requiresManualCheck: !!status.requiresManualCheck,
+      debugReason: status.debugInfo?.reason || null
+    };
+
+    this.log(`상태 확인 - 활성: ${status.isActive}, 일시중지: ${status.isPaused}, 일시정지 예약: ${status.isPausedScheduled}, Resume 버튼: ${status.hasResumeButton}, Pause 버튼: ${status.hasPauseButton}`, 'info');
+    // ★ v2.36: 상태 판단 근거 상세 로깅 (사후 분석 핵심 데이터)
+    this.log(`  - 판정케이스: ${status.status || '미정'} | 확장감지: ${expansionResult.method}(${expansionResult.visibleButtonCount}개) | 스피너타임아웃: ${spinnerTimedOut}`, 'info');
+    if (status.requiresManualCheck) {
+      this.log(`  ⚠️ requiresManualCheck=true (사유: ${status.debugInfo?.reason || 'N/A'})`, 'warning');
+    }
+    if (status.isExpired) {
+      this.log(`  - 만료 감지: ${status.expiredIndicator || 'N/A'}`, 'warning');
+    }
+    if (status.debugInfo?.allDatesFound?.length > 0) {
+      this.log(`  - 감지된 날짜: ${status.debugInfo.allDatesFound.join(', ')}`, 'debug');
+    }
+
     // 일시정지 예약 상태인 경우 추가 로깅
     if (status.isPausedScheduled) {
       this.log(`📌 일시정지 예약 상태 감지`, 'warning');
