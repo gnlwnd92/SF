@@ -190,15 +190,17 @@ class ConfigRepository {
         }
       }
 
+      config._fromSheet = true;  // 시트에서 정상 조회됨 표시
       return config;
     } catch (error) {
-      this._log('error', '설정 조회 실패:', error.message);
+      this._log('error', `⚠️ 설정 조회 실패 (기본값 사용): ${error.message}`);
 
       // 실패 시 기본값 반환
       const defaults = new Map();
       for (const [key, value] of Object.entries(CONFIG_DEFAULTS)) {
         defaults.set(key, value);
       }
+      defaults._fromSheet = false;  // API 실패로 기본값 반환됨 표시
       return defaults;
     }
   }

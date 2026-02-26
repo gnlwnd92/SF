@@ -208,6 +208,10 @@ class ScheduledSubscriptionWorkerUseCase {
     const resumeMinutesBefore = this._getLiveConfig('RESUME_MINUTES_BEFORE', WORKER_DEFAULTS.resumeMinutesBefore);
     const pauseMinutesAfter = this._getLiveConfig('PAUSE_MINUTES_AFTER', WORKER_DEFAULTS.pauseMinutesAfter);
     const maxRetryCount = this._getLiveConfig('MAX_RETRY_COUNT', WORKER_DEFAULTS.maxRetryCount);
+
+    // [진단] 매 사이클마다 실제 사용 설정값 출력
+    this.log(chalk.gray(`⚙️ [설정] PAUSE_AFTER=${pauseMinutesAfter}분, RESUME_BEFORE=${resumeMinutesBefore}분, MAX_RETRY=${maxRetryCount}`));
+
     const now = new Date();
 
     const timeStr = this.timeFilterService.formatDateTime(now);

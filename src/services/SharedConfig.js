@@ -82,14 +82,21 @@ class SharedConfig {
   async sync() {
     try {
       const config = await this.configRepository.getAll();
+      const fromSheet = config._fromSheet !== false;  // API 성공 여부
+
+      if (!fromSheet) {
+        // API 실패 → 기본값이 반환됨 → 기존 캐시 유지 (덮어쓰지 않음)
+        this._log('warn', `⚠️ 설정 동기화: API 실패로 기본값 반환됨 → 기존 캐시 유지`);
+        return;
+      }
 
       // 캐시 업데이트
       for (const [key, value] of config.entries()) {
+        if (key === '_fromSheet') continue;  // 내부 플래그 제외
         this.cache.set(key, value);
       }
 
       this.lastSyncTime = new Date();
-      this._log('info', `설정 동기화 완료 (${config.size}개 항목)`);
     } catch (error) {
       this._log('error', '설정 동기화 실패:', error.message);
       // 실패해도 기존 캐시(또는 기본값) 유지

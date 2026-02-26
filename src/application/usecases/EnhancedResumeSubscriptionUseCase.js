@@ -2294,7 +2294,30 @@ class EnhancedResumeSubscriptionUseCase {
           const afterLoginUrl = this.page.url();
           this.log(`📍 로그인 후 URL: ${afterLoginUrl}`, 'info');
           console.log(chalk.gray(`  로그인 후 URL: ${afterLoginUrl}`));
-          
+
+          // ★★★ v2.38 Layer 3: 로그인 최종 검증 (Defense-in-Depth) ★★★
+          // 로그인 후 URL이 여전히 accounts.google.com이면 → 로그인 실패
+          if (afterLoginUrl.includes('accounts.google.com/v3/signin')) {
+            this.log('❌ [Layer 3] 로그인 후에도 Google 로그인 페이지 → 실제 로그인 실패', 'error');
+            throw new Error('LOGIN_FALSE_POSITIVE: 로그인 후에도 Google 로그인 페이지에 있음');
+          }
+
+          // YouTube.com이지만 Sign in 버튼 존재 확인
+          const loginPageCheck = await this.page.evaluate(() => {
+            const signIn = document.querySelector('a[aria-label="Sign in"]') ||
+                           document.querySelector('tp-yt-paper-button[aria-label="Sign in"]');
+            const avatar = document.querySelector('button#avatar-btn');
+            return { hasSignIn: !!signIn, hasAvatar: !!avatar };
+          });
+
+          if (loginPageCheck.hasSignIn && !loginPageCheck.hasAvatar) {
+            this.log('❌ [Layer 3] YouTube 페이지지만 Sign in 버튼 존재 → 실제 로그인 실패', 'error');
+            await saveDebugScreenshot('login-false-positive');
+            throw new Error('LOGIN_FALSE_POSITIVE: YouTube 페이지에서 Sign in 버튼 감지');
+          }
+
+          this.log('✅ [Layer 3] 로그인 상태 최종 확인됨', 'success');
+
           // 로그인 결과에서 리디렉션 정보 확인 (ImprovedAuthenticationService에서 반환)
           if (loginResult.redirected && loginResult.targetUrl) {
             if (loginResult.targetUrl.includes('youtube.com/paid_memberships') || 

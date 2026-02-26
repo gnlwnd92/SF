@@ -616,6 +616,20 @@ class ImprovedAuthenticationService {
 
           // 중복 case 'account_chooser' 제거됨 (라인 284에서 이미 처리)
 
+          case 'two_factor_selection':
+            // ★★★ v2.39: 2FA 방법 선택 페이지 (Google OTP 클릭 → TOTP 입력) ★★★
+            console.log(chalk.blue(`[ImprovedAuth] 🔐 2FA 방법 선택 페이지 - Google OTP 선택`));
+            this.writeLoginLog('2FA 방법 선택 페이지');
+
+            await this.captureLoginStep(page, '06_2fa_selection', '2FA 방법 선택 페이지');
+
+            result = await this.handleTwoFactorSelection(page, credentials, options);
+            if (result && result.success) {
+              await this.captureLoginStep(page, '07_2fa_completed', '2FA 인증 완료');
+              this.writeLoginLog('2FA 인증 완료 (OTP 선택 경로)');
+            }
+            return result;
+
           case 'two_factor':
             console.log(chalk.blue(`[ImprovedAuth] 🔐 2단계 인증 페이지`));
             this.writeLoginLog('2단계 인증 페이지');
@@ -631,10 +645,43 @@ class ImprovedAuthenticationService {
             }
             return result;
 
-          case 'logged_in':
-            this.log('✅ 로그인 완료!', 'success');
+          case 'logged_in': {
+            // v2.38: 로그인 성공 검증 (false positive 방지)
+            // ★ 블록 스코프로 감싸 switch 내 const 충돌 방지
+            this.log('✅ 로그인 감지 - 검증 중...', 'info');
+            const verifyResult = await page.evaluate(() => {
+              const signIn = document.querySelector('a[aria-label="Sign in"]') ||
+                             document.querySelector('tp-yt-paper-button[aria-label="Sign in"]');
+              const avatar = document.querySelector('button#avatar-btn') ||
+                             document.querySelector('ytd-masthead #avatar-btn');
+              return {
+                hasSignIn: !!signIn,
+                hasAvatar: !!avatar,
+                url: window.location.href
+              };
+            });
+
+            if (verifyResult.hasSignIn && !verifyResult.hasAvatar) {
+              // Sign in 버튼이 있고 아바타가 없으면 → 실제로는 로그아웃
+              this.log('❌ FALSE POSITIVE 감지: Sign in 버튼 존재, 아바타 없음', 'error');
+              console.log(chalk.red(`[ImprovedAuth] ❌ 로그인 오판 감지 - 재시도 필요`));
+              // Google 로그인으로 이동
+              try {
+                await page.goto('https://accounts.google.com/v3/signin/identifier?continue=' +
+                  encodeURIComponent('https://www.youtube.com/paid_memberships') +
+                  '&service=youtube&flowName=GlifWebSignIn&flowEntry=ServiceLogin',
+                  { waitUntil: 'networkidle2', timeout: 15000 });
+                await new Promise(r => setTimeout(r, 2000));
+                continue; // 다음 단계에서 처리
+              } catch (e) {
+                return { success: false, error: 'LOGIN_FALSE_POSITIVE', skipRetry: false };
+              }
+            }
+
+            this.log('✅ 로그인 완료! (검증됨)', 'success');
             console.log(chalk.green(`[ImprovedAuth] ✅ 로그인 성공`));
             return { success: true };
+          }
 
           case 'logged_in_premium':
             this.log('✅ YouTube Premium 페이지에서 로그인 확인됨!', 'success');
@@ -645,6 +692,28 @@ class ImprovedAuthenticationService {
               pageType: 'premium_membership',
               message: 'YouTube Premium 멤버십 페이지에서 로그인 상태 확인됨'
             };
+
+          case 'youtube_not_logged_in': {
+            // v2.38: YouTube 페이지에 있지만 로그인 안 됨 (CAPTCHA goBack 후 등)
+            // ★ 블록 스코프로 감싸 switch 내 const 충돌 방지
+            this.log('⚠️ YouTube 로그아웃 상태 감지 (Sign in 버튼 존재)', 'warning');
+            console.log(chalk.yellow(`[ImprovedAuth] ⚠️ YouTube 로그아웃 상태 - 로그인 페이지로 이동 필요`));
+
+            // Google 로그인 페이지로 직접 이동
+            try {
+              const loginUrl = `https://accounts.google.com/v3/signin/identifier?continue=${encodeURIComponent('https://www.youtube.com/paid_memberships')}&service=youtube&flowName=GlifWebSignIn&flowEntry=ServiceLogin`;
+              await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+              await new Promise(r => setTimeout(r, 2000));
+              continue; // 다음 단계에서 email_input으로 처리됨
+            } catch (navError) {
+              return {
+                success: false,
+                error: 'YOUTUBE_NOT_LOGGED_IN',
+                message: 'YouTube 로그아웃 상태 - 로그인 페이지 이동 실패',
+                skipRetry: false
+              };
+            }
+          }
 
           default:
             this.log(`알 수 없는 페이지 타입: ${pageType}`, 'warning');
@@ -840,17 +909,33 @@ class ImprovedAuthenticationService {
         // ★★★ YouTube 로그인 완료 상태 감지 - error_page보다 먼저 체크 ★★★
         // Google 계정으로 YouTube에 로그인된 상태인지 확인
         if (url.includes('youtube.com') && !url.includes('accounts.google.com')) {
-          // YouTube 로그인 상태 확인 요소
-          const isLoggedInYoutube =
-            document.querySelector('button#avatar-btn') ||
-            document.querySelector('img#img[alt*="Avatar"]') ||
-            document.querySelector('[aria-label*="계정"]') ||
-            document.querySelector('[aria-label*="Account"]') ||
-            document.querySelector('ytd-masthead #avatar-btn');
+          // v2.38: Sign in / 로그인 버튼 존재 시 → 확실히 로그아웃 상태
+          const hasSignInIndicator =
+            document.querySelector('a[aria-label="Sign in"]') ||
+            document.querySelector('tp-yt-paper-button[aria-label="Sign in"]') ||
+            document.querySelector('a[href*="accounts.google.com/ServiceLogin"]');
 
-          if (isLoggedInYoutube || bodyText.includes('Memberships') || bodyText.includes('멤버십')) {
-            return { type: 'logged_in', debug: debugInfo };
+          if (hasSignInIndicator) {
+            return { type: 'youtube_not_logged_in', debug: { ...debugInfo, reason: 'sign_in_button_present' } };
           }
+
+          // 아바타 버튼으로 로그인 확인 (정확한 셀렉터만 사용)
+          const hasAvatar =
+            document.querySelector('button#avatar-btn') ||
+            document.querySelector('ytd-masthead #avatar-btn') ||
+            document.querySelector('img#img[alt*="Avatar"]');
+
+          if (hasAvatar) {
+            return { type: 'logged_in', debug: { ...debugInfo, reason: 'avatar_confirmed' } };
+          }
+
+          // 아바타 없지만 멤버십 콘텐츠 → 불확실하지만 보수적으로 로그인 처리
+          if (bodyText.includes('Memberships') || bodyText.includes('멤버십')) {
+            return { type: 'logged_in', debug: { ...debugInfo, reason: 'membership_text_no_avatar' } };
+          }
+
+          // YouTube 페이지지만 로그인 확인 불가 → not_logged_in으로 처리
+          return { type: 'youtube_not_logged_in', debug: { ...debugInfo, reason: 'no_avatar_no_membership' } };
         }
 
         // 브라우저 오류 페이지 감지 (네트워크/렌더링 오류)
@@ -982,9 +1067,34 @@ class ImprovedAuthenticationService {
           }
         }
 
-        // ★★★ 전화번호 인증 페이지 - URL 기반 감지 ★★★
+        // ★★★ 인증 방법 선택 페이지 - URL 기반 감지 + 내용 분석 ★★★
+        // /challenge/selection은 2FA 방법 선택 OR 전화번호 인증일 수 있음
         if (url.includes('/challenge/selection') ||
-            url.includes('/challenge/phone') ||
+            url.includes('/challenge/sk')) {
+          // Google OTP 옵션이 있으면 → 2FA 방법 선택 페이지
+          // ★ SMS 인증과 구분하기 위해 'Authenticator' 키워드를 포함한 매칭만 사용
+          const hasGoogleOTP = bodyText.includes('Google OTP') ||
+                               bodyText.includes('Google Authenticator') ||
+                               bodyText.includes('Authenticator app') ||
+                               bodyText.includes('인증 앱') ||
+                               bodyText.includes('認証システム') ||
+                               bodyText.includes('인증 코드 받기') ||
+                               bodyText.includes('verification code from the Authenticator') ||
+                               bodyText.includes('verification code from Google Authenticator');
+          const has2StepText = bodyText.includes('2단계 인증') ||
+                               bodyText.includes('2-Step Verification') ||
+                               bodyText.includes('로그인 방법을 선택하세요') ||
+                               bodyText.includes('Choose how you want to sign in') ||
+                               bodyText.includes('Choose how to sign in');
+
+          if (hasGoogleOTP || has2StepText) {
+            return { type: 'two_factor_selection', debug: debugInfo };
+          }
+          return { type: 'phone_verification', debug: debugInfo };
+        }
+
+        // ★★★ 전화번호 인증 페이지 - URL 기반 감지 ★★★
+        if (url.includes('/challenge/phone') ||
             url.includes('/signin/v2/challenge/ipp') ||
             url.includes('/signin/v2/challenge/iap') ||
             url.includes('/v3/signin/challenge/ipp') ||
@@ -1052,6 +1162,7 @@ class ImprovedAuthenticationService {
         }
 
         // 2FA/TOTP 페이지 - 텍스트/DOM 기반 (URL로 감지 못한 경우)
+        // ★ v2.39: TOTP 입력 필드 유무로 직접 입력 페이지(two_factor) vs 선택 페이지(two_factor_selection) 구분
         if (bodyText.includes('2단계 인증') ||
             bodyText.includes('2-Step Verification') ||
             bodyText.includes('Google OTP') ||
@@ -1059,6 +1170,19 @@ class ImprovedAuthenticationService {
             bodyText.includes('인증 앱') ||
             bodyText.includes('Authenticator app') ||
             totpInput) {
+          // TOTP 입력 필드가 있으면 → 직접 코드 입력 페이지
+          if (totpInput) {
+            return { type: 'two_factor', debug: debugInfo };
+          }
+          // "로그인 방법을 선택하세요" 또는 여러 옵션이 보이면 → 선택 페이지
+          const hasSelectionText = bodyText.includes('로그인 방법을 선택하세요') ||
+                                   bodyText.includes('Choose how') ||
+                                   bodyText.includes('다른 방법 시도') ||
+                                   bodyText.includes('Try another way');
+          if (hasSelectionText) {
+            return { type: 'two_factor_selection', debug: debugInfo };
+          }
+          // 기본적으로 two_factor (기존 동작 유지)
           return { type: 'two_factor', debug: debugInfo };
         }
 
@@ -1096,8 +1220,9 @@ class ImprovedAuthenticationService {
         }
         
         // 로그인 완료
+        // v2.38: youtube.com 단독 체크 제거 (842~854에서 이미 처리)
+        // myaccount.google.com은 로그인 필수 페이지이므로 유지
         if (url.includes('myaccount.google.com') ||
-            url.includes('youtube.com') ||
             document.querySelector('img[aria-label*="Google Account"]')) {
           return { type: 'logged_in', debug: debugInfo };
         }
@@ -1484,15 +1609,31 @@ class ImprovedAuthenticationService {
             path: `screenshots/phone_verification_after_password_${Date.now()}.png`
           });
         }
-        return { 
-          success: false, 
+        return {
+          success: false,
           error: 'PHONE_VERIFICATION_REQUIRED',
           message: '번호인증 필요',
           status: 'phone_verification_required',
           skipRetry: true  // 재시도 방지
         };
       }
-      
+
+      // ★★★ v2.39: 2FA 방법 선택 페이지 (Google OTP 옵션 클릭 → TOTP 입력) ★★★
+      if (nextPageType === 'two_factor_selection') {
+        if (credentials.totpSecret) {
+          this.log('🔐 2FA 방법 선택 페이지 감지 - Google OTP 선택 시도...', 'info');
+          return await this.handleTwoFactorSelection(page, credentials, options);
+        } else {
+          this.log('2FA 방법 선택이 필요하지만 TOTP 시크릿이 없습니다', 'warning');
+          return {
+            success: false,
+            error: '2FA_REQUIRED',
+            message: '2FA 인증이 필요하지만 TOTP 시크릿이 없습니다',
+            skipRetry: true
+          };
+        }
+      }
+
       if (nextPageType === 'two_factor') {
         if (credentials.totpSecret) {
           this.log('2FA 인증이 필요합니다. TOTP 코드 입력 시작...', 'info');
@@ -1534,6 +1675,244 @@ class ImprovedAuthenticationService {
       }
       
       throw error;
+    }
+  }
+
+  /**
+   * ★★★ v2.39: 2FA 방법 선택 페이지 처리 ★★★
+   * Google 2단계 인증에서 "Google OTP 앱에서 인증 코드 받기" 옵션을 클릭한 뒤
+   * TOTP 입력 페이지로 이동하여 코드를 입력하는 전체 흐름을 처리합니다.
+   *
+   * 스크린샷 참고: 2FA 방법 선택 페이지에는 다음 옵션이 표시됩니다.
+   *   1) 휴대전화나 태블릿에서 예를 탭합니다 (비활성일 수 있음)
+   *   2) Google OTP 앱에서 인증 코드 받기 ← 이것을 클릭
+   *   3) 다른 방법 시도
+   */
+  async handleTwoFactorSelection(page, credentials, options = {}) {
+    this.log('🔐 2FA 방법 선택 페이지 - Google OTP 옵션 클릭 시작', 'info');
+
+    // TOTP 시크릿이 없으면 조기 반환
+    if (!credentials.totpSecret) {
+      this.log('⚠️ TOTP 시크릿이 없어 Google OTP 선택을 진행할 수 없습니다', 'warning');
+      return {
+        success: false,
+        error: '2FA_REQUIRED',
+        message: '2FA 방법 선택 페이지이지만 TOTP 시크릿이 없습니다',
+        skipRetry: true
+      };
+    }
+
+    // 스크린샷 저장
+    try {
+      await page.screenshot({
+        path: `screenshots/2fa_selection_page_${Date.now()}.png`
+      });
+    } catch (e) { /* 무시 */ }
+
+    // Google OTP 옵션을 찾아 클릭할 다국어 텍스트 목록
+    const otpOptionTexts = [
+      'Google OTP 앱에서 인증 코드 받기',   // 한국어
+      'Google OTP',                          // 한국어 (단축)
+      'Google Authenticator',                // 영어
+      'Get a verification code',             // 영어
+      'Get verification code',               // 영어 (변형)
+      'Authenticator app',                   // 영어
+      'Use your Authenticator app',          // 영어 (변형)
+      '認証システム アプリから確認コードを取得', // 일본어
+      '使用 Google 身份验证器',               // 중국어 (간체)
+      'Usar o app Google Authenticator',     // 포르투갈어
+      'Usar la app de Google Authenticator', // 스페인어
+      'Google Authenticator-App verwenden',  // 독일어
+      'Utiliser Google Authenticator',       // 프랑스어
+      'Usa l\'app Google Authenticator',     // 이탈리아어
+    ];
+
+    try {
+      // ===== 1단계: page.evaluate로 Google OTP 옵션 클릭 =====
+      const clickResult = await page.evaluate((texts) => {
+        // Google 2FA 선택 페이지의 다양한 요소 구조 대응
+        // li, div[data-challengeentry], div[role="link"], a 등
+        const candidates = document.querySelectorAll(
+          'li, div[data-challengeentry], div[data-challengeid], div[role="link"], ' +
+          'div[role="button"], a[data-action], button, [jsaction], [jsname]'
+        );
+
+        // ★ 가장 구체적인(textContent가 짧은) 매칭 요소를 선택하여 오클릭 방지
+        let bestMatch = null;
+        let bestMatchLength = Infinity;
+        for (const el of candidates) {
+          const elText = (el.textContent || el.innerText || '').trim();
+          for (const text of texts) {
+            if (elText.includes(text) && elText.length < bestMatchLength) {
+              bestMatch = el;
+              bestMatchLength = elText.length;
+            }
+          }
+        }
+        if (bestMatch) {
+          bestMatch.click();
+          return { success: true, matchedText: (bestMatch.textContent || '').trim().substring(0, 80) };
+        }
+        return { success: false };
+      }, otpOptionTexts);
+
+      if (clickResult.success) {
+        this.log(`✅ Google OTP 옵션 클릭 성공: "${clickResult.matchedText}"`, 'success');
+      } else {
+        // ===== 2단계: Puppeteer XPath/셀렉터 기반 재시도 =====
+        this.log('⚠️ evaluate 클릭 실패 - Puppeteer 셀렉터로 재시도', 'warning');
+
+        let fallbackClicked = false;
+        for (const text of otpOptionTexts) {
+          try {
+            // XPath로 텍스트 포함 요소 검색 (대소문자 무시하지 않음)
+            const elements = await page.$$(`xpath/.//li[contains(., "${text}")] | .//div[contains(., "${text}")]`);
+            for (const el of elements) {
+              const box = await el.boundingBox();
+              if (box && box.width > 0 && box.height > 0) {
+                await el.click();
+                this.log(`✅ Puppeteer XPath 클릭 성공: "${text}"`, 'success');
+                fallbackClicked = true;
+                break;
+              }
+            }
+            if (fallbackClicked) break;
+          } catch (e) {
+            continue;
+          }
+        }
+
+        if (!fallbackClicked) {
+          // ===== 3단계: CDP 클릭 최후 수단 =====
+          this.log('⚠️ Puppeteer 클릭도 실패 - CDP dispatchMouseEvent로 재시도', 'warning');
+
+          const elementCoords = await page.evaluate((texts) => {
+            const allEls = document.querySelectorAll('li, div, a, button, [jsname]');
+            for (const el of allEls) {
+              const t = (el.textContent || '').trim();
+              for (const text of texts) {
+                if (t.includes(text)) {
+                  const rect = el.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0) {
+                    return {
+                      x: rect.x + rect.width / 2,
+                      y: rect.y + rect.height / 2,
+                      found: true,
+                      text: t.substring(0, 80)
+                    };
+                  }
+                }
+              }
+            }
+            return { found: false };
+          }, otpOptionTexts);
+
+          if (elementCoords.found) {
+            // ★ try-finally로 CDP 세션 누수 방지
+            const client = await page.target().createCDPSession();
+            try {
+              await client.send('Input.dispatchMouseEvent', {
+                type: 'mousePressed', x: elementCoords.x, y: elementCoords.y,
+                button: 'left', clickCount: 1
+              });
+              await new Promise(r => setTimeout(r, 100));
+              await client.send('Input.dispatchMouseEvent', {
+                type: 'mouseReleased', x: elementCoords.x, y: elementCoords.y,
+                button: 'left', clickCount: 1
+              });
+            } finally {
+              await client.detach();
+            }
+            this.log(`✅ CDP 클릭 성공: "${elementCoords.text}"`, 'success');
+          } else {
+            this.log('❌ Google OTP 옵션을 페이지에서 찾을 수 없습니다', 'error');
+            return {
+              success: false,
+              error: '2FA_SELECTION_FAILED',
+              message: 'Google OTP 옵션을 찾을 수 없습니다'
+            };
+          }
+        }
+      }
+
+      // Google OTP 클릭 후 TOTP 입력 페이지 로드 대기
+      // ★ 네비게이션 또는 TOTP 입력 필드 출현을 감지 (고정 대기 대신)
+      this.log('⏳ Google OTP 클릭 후 TOTP 입력 페이지 대기 중...', 'info');
+      try {
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }),
+          page.waitForSelector('input[type="tel"], input[name="totpPin"], #totpPin', { visible: true, timeout: 10000 }),
+          new Promise(r => setTimeout(r, 5000))  // 최대 5초 폴백
+        ]);
+      } catch (e) {
+        // 타임아웃 허용 - detectPageType에서 후속 처리
+        this.log('⚠️ 네비게이션/셀렉터 대기 타임아웃 - 페이지 타입 재확인으로 진행', 'warning');
+      }
+
+      // 스크린샷 저장 (TOTP 페이지 도착 확인용)
+      try {
+        await page.screenshot({
+          path: `screenshots/2fa_after_otp_selection_${Date.now()}.png`
+        });
+      } catch (e) { /* 무시 */ }
+
+      // 현재 페이지 타입 확인
+      const afterPageType = await this.detectPageType(page);
+      this.log(`📋 OTP 옵션 클릭 후 페이지 타입: ${afterPageType}`, 'info');
+
+      if (afterPageType === 'two_factor') {
+        // TOTP 입력 페이지로 정상 이동 → 기존 2FA 처리 로직 사용
+        this.log('✅ TOTP 입력 페이지로 이동 성공 → TOTP 코드 입력 시작', 'success');
+        return await this.handle2FALogin(page, credentials, options);
+      }
+
+      if (afterPageType === 'two_factor_selection') {
+        // 아직 선택 페이지에 있음 - 추가 대기 후 재시도
+        this.log('⚠️ 아직 2FA 선택 페이지 - 추가 대기 후 재확인', 'warning');
+        await new Promise(r => setTimeout(r, 3000));
+
+        const retryPageType = await this.detectPageType(page);
+        this.log(`📋 재확인 후 페이지 타입: ${retryPageType}`, 'info');
+
+        if (retryPageType === 'two_factor') {
+          return await this.handle2FALogin(page, credentials, options);
+        }
+      }
+
+      if (afterPageType === 'logged_in') {
+        this.log('✅ 2FA 선택 후 바로 로그인 완료', 'success');
+        return { success: true };
+      }
+
+      // URL 기반으로 TOTP 페이지인지 직접 확인
+      const currentUrl = page.url();
+      if (currentUrl.includes('/challenge/totp')) {
+        this.log('✅ URL 기반 TOTP 페이지 확인 → TOTP 코드 입력 시작', 'success');
+        return await this.handle2FALogin(page, credentials, options);
+      }
+
+      // 예상치 못한 페이지
+      this.log(`⚠️ OTP 선택 후 예상치 못한 페이지: ${afterPageType} (URL: ${currentUrl})`, 'warning');
+      return {
+        success: false,
+        error: '2FA_SELECTION_UNEXPECTED_PAGE',
+        message: `OTP 선택 후 예상치 못한 페이지: ${afterPageType}`
+      };
+
+    } catch (error) {
+      this.log(`❌ 2FA 방법 선택 처리 실패: ${error.message}`, 'error');
+
+      try {
+        await page.screenshot({
+          path: `screenshots/2fa_selection_error_${Date.now()}.png`
+        });
+      } catch (e) { /* 무시 */ }
+
+      return {
+        success: false,
+        error: '2FA_SELECTION_FAILED',
+        message: error.message
+      };
     }
   }
 

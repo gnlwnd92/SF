@@ -257,9 +257,9 @@ class EnterpriseCLI {
     // ═══════════════════════════════════════════════════════════
     // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
     // ═══════════════════════════════════════════════════════════
-    const VERSION = 'v2.37';
-    const VERSION_DATE = '2026-02-08 KST';
-    const VERSION_DESC = 'Pause 결제미완료 감지 누락 방지 (Manage 버튼 재시도 + 검증불가 안전중단)';
+    const VERSION = 'v2.39';
+    const VERSION_DATE = '2026-02-26 KST';
+    const VERSION_DESC = '2FA 방법 선택 페이지 Google OTP 자동 클릭 + TOTP 연계';
     // ═══════════════════════════════════════════════════════════
 
     console.clear();
@@ -3189,7 +3189,7 @@ class EnterpriseCLI {
    */
   async scheduledWorker() {
     try {
-      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.37'));
+      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.39'));
       console.log(chalk.gray('─'.repeat(50)));
 
       // [v2.15] SharedConfig에서 설정값 로드
