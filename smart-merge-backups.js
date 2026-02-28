@@ -266,8 +266,7 @@ class SmartMergeCLI {
         this.config.credentialsPath
       );
       
-      // 작은 배치 크기로 안전하게 업로드
-      sheetsService.config.batchSize = 100;
+      // v2: 배치 크기는 동적 계산 (설정 불필요)
       sheetsService.config.maxRetries = 3;
       
       spinner.text = 'Google Sheets API 연결 중...';

@@ -1,11 +1,14 @@
 /**
- * 📤 최종 TXT 파일 → Google Sheets 백업 Use Case
- * 
+ * 📤 최종 TXT 파일 → Google Sheets 백업 Use Case (v2.40 성능 최적화)
+ *
  * 처리 방식:
  * 1. 모든 TXT 파일을 Google Sheets에 먼저 백업
- * 2. Sheets 내에서 중복 ID 확인 및 처리
- * 3. 최신 데이터로 업데이트 (source_file 날짜 기준)
- * 4. acc_id 기준 정렬
+ * 2. Sheets 내에서 중복 ID의 행만 삭제 (deleteDimension)
+ * 3. 서버 측 정렬 (sortRange) — 데이터 재전송 불필요
+ * 4. 빈 행 트림 (updateSheetProperties) — 셀 수 제한 방지
+ * 5. 삭제 + 정렬 + 트림을 단일 batchUpdate로 실행 (API 1회)
+ *
+ * v2.40 개선: 299배치 재업로드 → 단일 batchUpdate (약 100배 성능 향상)
  */
 
 const chalk = require('chalk');
@@ -44,6 +47,7 @@ class TxtBackupUseCaseFinal {
             totalProfiles: 0,
             successfulBackups: 0,
             duplicatesProcessed: 0,
+            emptyRowsTrimmed: 0,
             movedFiles: [],
             errors: [],
             startTime: null,
@@ -184,6 +188,9 @@ class TxtBackupUseCaseFinal {
             console.log(chalk.white(`   • 업로드된 프로필: ${this.stats.totalProfiles}개`));
             console.log(chalk.white(`   • 최종 프로필 수: ${this.stats.successfulBackups}개`));
             console.log(chalk.yellow(`   • 중복 처리: ${this.stats.duplicatesProcessed}개`));
+            if (this.stats.emptyRowsTrimmed > 0) {
+                console.log(chalk.blue(`   • 빈 행 정리: ${this.stats.emptyRowsTrimmed}개 (셀 수 최적화)`));
+            }
             console.log(chalk.white(`   • 소요 시간: ${duration}초`));
 
             return this.stats;
@@ -196,120 +203,152 @@ class TxtBackupUseCaseFinal {
     }
 
     /**
-     * Google Sheets 내에서 중복 처리
+     * [v2.40] Google Sheets 내에서 중복 처리 (최적화)
+     *
+     * 기존: 전체 클리어 → 299배치 재업로드 (302 API calls, ~6-12분)
+     * 개선: 중복 행만 삭제 + 서버 정렬 + 빈 행 트림 (1 batchUpdate, ~3-5초)
      */
     async processDuplicatesInSheets() {
         try {
-            // 1. 전체 데이터 읽기
-            const response = await this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.config.spreadsheetId,
-                range: `${this.config.sheetName}!A:X`
-            });
+            // 1. 시트 메타정보 + 데이터 동시 조회 (2 API calls, 병렬)
+            const [sheetInfo, dataResponse] = await Promise.all([
+                this.getSheetInfo(this.config.sheetName),
+                this.sheets.spreadsheets.values.get({
+                    spreadsheetId: this.config.spreadsheetId,
+                    range: `${this.config.sheetName}!A:X`
+                })
+            ]);
 
-            const rows = response.data.values || [];
+            const { sheetId, gridRowCount } = sheetInfo;
+            const rows = dataResponse.data.values || [];
+
             if (rows.length <= 1) {
                 console.log(chalk.gray('   → 데이터가 없거나 헤더만 있습니다.'));
+                if (gridRowCount > 100) {
+                    await this.trimSheetToSize(sheetId, 100);
+                    console.log(chalk.blue(`   → 빈 시트 크기 축소: ${gridRowCount} → 100행`));
+                }
                 return;
             }
 
             const headers = rows[0];
             const dataRows = rows.slice(1);
-            
-            console.log(chalk.gray(`   → 총 ${dataRows.length}개 행 로드`));
+            console.log(chalk.gray(`   → 총 ${dataRows.length}개 행 로드 (시트 격자: ${gridRowCount}행)`));
 
-            // 2. ID별로 그룹화하고 최신 데이터 선택
-            const profileMap = new Map();
+            // 2. 중복 감지 + 삭제할 행의 시트 인덱스 수집
+            const profileMap = new Map(); // id → { sheetRowIndex, profile }
+            const rowsToDelete = [];      // 0-based 시트 행 인덱스 (header=0)
             let duplicateCount = 0;
 
             for (let i = 0; i < dataRows.length; i++) {
                 const row = dataRows[i];
                 const profile = this.rowToProfile(row, headers);
-                
-                if (!profile.id) continue;
+                const sheetRowIndex = i + 1; // 0-based (header=0, 첫 데이터=1)
+
+                // ID 없는 행은 삭제 대상
+                if (!profile.id) {
+                    rowsToDelete.push(sheetRowIndex);
+                    continue;
+                }
 
                 const existing = profileMap.get(profile.id);
-                
+
                 if (existing) {
                     duplicateCount++;
-                    // 날짜 비교하여 최신 데이터 선택
-                    if (this.shouldReplaceProfile(existing, profile)) {
-                        console.log(chalk.yellow(`   → ID ${profile.id} 교체: ${existing.source_file} → ${profile.source_file}`));
-                        profileMap.set(profile.id, profile);
+                    if (this.shouldReplaceProfile(existing.profile, profile)) {
+                        // candidate가 최신 → 기존 행 삭제
+                        rowsToDelete.push(existing.sheetRowIndex);
+                        profileMap.set(profile.id, { sheetRowIndex, profile });
+                    } else {
+                        // 기존이 최신 → 현재 행 삭제
+                        rowsToDelete.push(sheetRowIndex);
                     }
                 } else {
-                    profileMap.set(profile.id, profile);
+                    profileMap.set(profile.id, { sheetRowIndex, profile });
                 }
             }
 
             this.stats.duplicatesProcessed = duplicateCount;
-            console.log(chalk.yellow(`   → ${duplicateCount}개 중복 발견 및 처리`));
+            console.log(chalk.yellow(`   → ${duplicateCount}개 중복 발견`));
 
-            // 3. acc_id 기준 정렬 (내림차순: 큰 값이 먼저)
-            const uniqueProfiles = Array.from(profileMap.values());
-            uniqueProfiles.sort((a, b) => {
-                const accIdA = typeof a.acc_id === 'number' ? a.acc_id : parseInt(a.acc_id) || 0;
-                const accIdB = typeof b.acc_id === 'number' ? b.acc_id : parseInt(b.acc_id) || 0;
-                return accIdB - accIdA;  // 내림차순 정렬
-            });
+            // 3. batchUpdate 요청 구성 (삭제 + 정렬 + 트림을 1회 API 호출로)
+            const requests = [];
 
-            console.log(chalk.blue(`   → acc_id 기준 내림차순 정렬 완료`));
+            // 3a. 중복/빈 행 삭제 (내림차순, 연속 행 그룹핑으로 요청 수 최소화)
+            if (rowsToDelete.length > 0) {
+                rowsToDelete.sort((a, b) => b - a); // 내림차순 (인덱스 시프트 방지)
+                const deleteRanges = this.groupConsecutiveIndices(rowsToDelete);
 
-            // 4. 시트 초기화 후 정렬된 데이터 다시 쓰기
-            await this.clearSheet();
-            await this.setHeaders();
-            
-            // [v2.7] 배치로 나누어 업로드 (재시도 + 대기 로직 추가)
-            const totalBatches = Math.ceil(uniqueProfiles.length / this.config.batchSize);
-
-            for (let i = 0; i < totalBatches; i++) {
-                const start = i * this.config.batchSize;
-                const end = Math.min(start + this.config.batchSize, uniqueProfiles.length);
-                const batch = uniqueProfiles.slice(start, end);
-
-                const rows = batch.map(profile =>
-                    this.templateHeaders.map(header => {
-                        const value = profile[header];
-                        // 숫자 타입 유지
-                        if ((header === 'acc_id' || header === 'proxyid') && typeof value === 'number') {
-                            return value;
-                        }
-                        return value || '';
-                    })
-                );
-
-                // [v2.7] 재시도 로직
-                let success = false;
-                for (let attempt = 1; attempt <= this.config.maxRetries && !success; attempt++) {
-                    try {
-                        await this.sheets.spreadsheets.values.append({
-                            spreadsheetId: this.config.spreadsheetId,
-                            range: `${this.config.sheetName}!A:X`,
-                            valueInputOption: 'RAW',
-                            insertDataOption: 'INSERT_ROWS',
-                            requestBody: {
-                                values: rows
+                for (const range of deleteRanges) {
+                    requests.push({
+                        deleteDimension: {
+                            range: {
+                                sheetId,
+                                dimension: 'ROWS',
+                                startIndex: range.start,
+                                endIndex: range.end
                             }
-                        });
-                        success = true;
-                        console.log(chalk.gray(`   → 배치 ${i + 1}/${totalBatches} 재업로드 완료 (${batch.length}개)`));
-                    } catch (error) {
-                        if (attempt < this.config.maxRetries) {
-                            console.log(chalk.yellow(`   ⚠️ 배치 ${i + 1} 실패 (시도 ${attempt}/${this.config.maxRetries}): ${error.message?.substring(0, 50) || error}`));
-                            await this.delay(this.config.retryDelay * attempt);
-                        } else {
-                            throw new Error(`배치 ${i + 1} 재업로드 실패: ${error.message?.substring(0, 100) || error}`);
                         }
-                    }
+                    });
                 }
-
-                // [v2.7] 다음 배치 전 대기 (API 제한 방지)
-                if (i < totalBatches - 1) {
-                    await this.delay(this.config.batchDelay);
-                }
+                console.log(chalk.yellow(`   → ${rowsToDelete.length}개 행 삭제 (${deleteRanges.length}개 범위로 그룹화)`));
             }
 
-            this.stats.successfulBackups = uniqueProfiles.length;
-            console.log(chalk.green(`   → 최종 ${uniqueProfiles.length}개 프로필 저장 완료`));
+            // 3b. acc_id 기준 내림차순 정렬 (sortRange: 데이터 전송 없이 서버에서 정렬)
+            const finalDataCount = dataRows.length - rowsToDelete.length;
+            if (finalDataCount > 0) {
+                requests.push({
+                    sortRange: {
+                        range: {
+                            sheetId,
+                            startRowIndex: 1,                              // 헤더 제외
+                            endRowIndex: finalDataCount + 1,               // 삭제 후 남은 데이터 + 헤더
+                            startColumnIndex: 0,
+                            endColumnIndex: this.templateHeaders.length    // 24열
+                        },
+                        sortSpecs: [{
+                            dimensionIndex: 0,       // Column A (acc_id)
+                            sortOrder: 'DESCENDING'
+                        }]
+                    }
+                });
+                console.log(chalk.blue(`   → acc_id 기준 내림차순 정렬`));
+            }
+
+            // 3c. 빈 행 정리 — 시트 격자 크기 축소 (셀 수 제한 방지)
+            //     Google Sheets는 스프레드시트당 1,000만 셀 제한
+            //     values.append(INSERT_ROWS)가 격자를 계속 늘리고, values.clear()는 줄이지 못함
+            //     updateSheetProperties로 격자를 실제 데이터 크기에 맞춰 축소
+            const targetRowCount = Math.max(finalDataCount + 1 + 10, 100); // 헤더 + 데이터 + 여유 10행, 최소 100행
+            const postDeletionGridRows = gridRowCount - rowsToDelete.length;
+
+            if (postDeletionGridRows > targetRowCount) {
+                requests.push({
+                    updateSheetProperties: {
+                        properties: {
+                            sheetId,
+                            gridProperties: {
+                                rowCount: targetRowCount
+                            }
+                        },
+                        fields: 'gridProperties.rowCount'
+                    }
+                });
+                const trimmed = postDeletionGridRows - targetRowCount;
+                this.stats.emptyRowsTrimmed = trimmed;
+                console.log(chalk.blue(`   → 빈 행 ${trimmed}개 정리 (${postDeletionGridRows} → ${targetRowCount}행)`));
+            }
+
+            // 4. 단일 batchUpdate 실행 (모든 작업을 1번의 API 호출로)
+            if (requests.length > 0) {
+                await this.sheets.spreadsheets.batchUpdate({
+                    spreadsheetId: this.config.spreadsheetId,
+                    requestBody: { requests }
+                });
+            }
+
+            this.stats.successfulBackups = finalDataCount;
+            console.log(chalk.green(`   → 완료: ${finalDataCount}개 프로필 (API 호출 ${requests.length > 0 ? 1 : 0}회)`));
 
         } catch (error) {
             console.error(chalk.red('Sheets 내 중복 처리 실패:'), error.message);
@@ -350,6 +389,75 @@ class TxtBackupUseCaseFinal {
         }
         
         return candidateDate > existingDate;
+    }
+
+    /**
+     * 시트 메타정보 조회 (sheetId + gridProperties)
+     * deleteDimension/sortRange/updateSheetProperties에 숫자 sheetId가 필수
+     */
+    async getSheetInfo(sheetName) {
+        const response = await this.sheets.spreadsheets.get({
+            spreadsheetId: this.config.spreadsheetId,
+            fields: 'sheets.properties'
+        });
+
+        const sheet = (response.data.sheets || []).find(
+            s => s.properties.title === sheetName
+        );
+
+        return {
+            sheetId: sheet ? sheet.properties.sheetId : 0,
+            gridRowCount: sheet?.properties?.gridProperties?.rowCount || 0,
+            gridColumnCount: sheet?.properties?.gridProperties?.columnCount || 26
+        };
+    }
+
+    /**
+     * 내림차순 정렬된 인덱스를 연속 범위로 그룹핑
+     * 예: [100, 99, 98, 50, 10, 9] → [{start:98,end:101}, {start:50,end:51}, {start:9,end:11}]
+     * deleteDimension 요청 수를 최소화 (개별 1000개 → 그룹 ~수십 개)
+     */
+    groupConsecutiveIndices(sortedDescIndices) {
+        if (sortedDescIndices.length === 0) return [];
+
+        const ranges = [];
+        let end = sortedDescIndices[0] + 1; // exclusive
+        let start = sortedDescIndices[0];
+
+        for (let i = 1; i < sortedDescIndices.length; i++) {
+            if (sortedDescIndices[i] === start - 1) {
+                // 연속 (내림차순으로 진행)
+                start = sortedDescIndices[i];
+            } else {
+                // 갭 발견 → 현재 범위 저장
+                ranges.push({ start, end });
+                end = sortedDescIndices[i] + 1;
+                start = sortedDescIndices[i];
+            }
+        }
+        ranges.push({ start, end });
+
+        return ranges; // 내림차순 유지 (높은 인덱스부터 삭제)
+    }
+
+    /**
+     * 시트 격자 크기를 지정된 행 수로 축소 (빈 데이터 전용)
+     */
+    async trimSheetToSize(sheetId, targetRowCount) {
+        await this.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: this.config.spreadsheetId,
+            requestBody: {
+                requests: [{
+                    updateSheetProperties: {
+                        properties: {
+                            sheetId,
+                            gridProperties: { rowCount: targetRowCount }
+                        },
+                        fields: 'gridProperties.rowCount'
+                    }
+                }]
+            }
+        });
     }
 
     /**
