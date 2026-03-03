@@ -1,6 +1,7 @@
 const axios = require('axios');
 const puppeteer = require('puppeteer');
 const { EventEmitter } = require('events');
+const { execSync } = require('child_process');
 // v4.0 - EnhancedStealthAdapter 완전 제거 (AdsPower 기본 기능만 사용)
 // v4.1 - DialogHandler 통합 (beforeunload 다이얼로그 자동 처리)
 const DialogHandler = require('../../utils/DialogHandler');
@@ -101,35 +102,121 @@ class AdsPowerAdapter extends EventEmitter {
   }
 
   /**
-   * 포트 자동 감지 (50325-50327 범위 시도)
+   * AdsPower 프로세스가 리슨하는 포트를 OS에서 직접 탐지
+   * Windows: tasklist → PID 추출 → netstat로 해당 PID의 LISTENING 포트 조회
+   * @returns {number[]} 감지된 포트 배열 (중복 제거, 정렬됨)
+   */
+  detectPortsFromProcess() {
+    try {
+      // 1단계: AdsPower 프로세스 PID 찾기
+      // 프로세스명이 버전마다 다름 (adspower.exe, ads_core_api.exe, AdsPower Global.exe 등)
+      // → 전체 tasklist에서 'adspower' 키워드로 매칭
+      const pids = [];
+
+      try {
+        const output = execSync('tasklist /FO CSV /NH', {
+          encoding: 'utf-8', timeout: 5000, windowsHide: true
+        });
+        for (const line of output.trim().split('\n')) {
+          // CSV: "AdsPower Global.exe","12345","Console","1","150,000 K"
+          if (!line.toLowerCase().includes('adspower')) continue;
+          const match = line.match(/"[^"]+","(\d+)"/);
+          if (match) pids.push(match[1]);
+        }
+      } catch { /* tasklist 실행 실패 */ }
+
+      if (pids.length === 0) {
+        console.log('[AdsPower] ⚠️  AdsPower 프로세스를 찾을 수 없습니다.');
+        return [];
+      }
+
+      console.log(`[AdsPower] 🔍 AdsPower PID 발견: ${pids.join(', ')}`);
+
+      // 2단계: 해당 PID가 LISTENING하는 포트 추출
+      const netstatOutput = execSync('netstat -ano', {
+        encoding: 'utf-8', timeout: 10000, windowsHide: true
+      });
+
+      const ports = new Set();
+      const pidSet = new Set(pids);
+
+      for (const line of netstatOutput.split('\n')) {
+        if (!line.includes('LISTENING')) continue;
+        const parts = line.trim().split(/\s+/);
+        // [TCP, 127.0.0.1:50326, 0.0.0.0:0, LISTENING, 12345]
+        const pid = parts[parts.length - 1];
+        if (!pidSet.has(pid)) continue;
+        const portMatch = (parts[1] || '').match(/:(\d+)$/);
+        if (portMatch) {
+          const port = parseInt(portMatch[1], 10);
+          if (port >= 1024) ports.add(port);
+        }
+      }
+
+      const sortedPorts = [...ports].sort((a, b) => a - b);
+      if (sortedPorts.length > 0) {
+        console.log(`[AdsPower] 🔍 프로세스 리슨 포트 감지: ${sortedPorts.join(', ')}`);
+      }
+      return sortedPorts;
+    } catch (error) {
+      console.log(`[AdsPower] ⚠️  프로세스 포트 감지 실패: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 지정된 포트에서 AdsPower API 응답 확인
+   * @param {number} port
+   * @returns {Promise<boolean>}
+   */
+  async verifyAdsPowerPort(port) {
+    try {
+      const testClient = axios.create({
+        baseURL: `http://127.0.0.1:${port}`,
+        timeout: 3000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const response = await testClient.get('/api/v1/user/list', {
+        params: { page_size: 1 }
+      });
+      return response.data.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 포트 자동 감지 - 프로세스 기반 탐지 우선, 실패 시 고정 범위 폴백
    * @returns {Promise<string|null>} 작동하는 포트 URL, 실패시 null
    */
   async detectWorkingPort() {
-    const possiblePorts = [50326, 50325, 50327]; // 최신 버전 포트부터 시도
     const baseHost = 'http://127.0.0.1';
 
-    console.log(`[AdsPower] 자동 포트 감지 시작... (${possiblePorts.join(', ')} 시도)`);
+    // 1단계: OS 프로세스에서 AdsPower 리슨 포트 직접 탐지
+    const detectedPorts = this.detectPortsFromProcess();
 
-    for (const port of possiblePorts) {
-      const testUrl = `${baseHost}:${port}`;
-      try {
-        const testClient = axios.create({
-          baseURL: testUrl,
-          timeout: 3000, // 빠른 타임아웃
-          headers: { 'Content-Type': 'application/json' }
-        });
+    if (detectedPorts.length > 0) {
+      console.log(`[AdsPower] 자동 포트 감지 시작... (프로세스 기반: ${detectedPorts.join(', ')})`);
 
-        const response = await testClient.get('/api/v1/user/list', {
-          params: { page_size: 1 }
-        });
-
-        if (response.data.code === 0) {
-          console.log(`[AdsPower] ✅ 포트 ${port} 연결 성공!`);
-          return testUrl;
+      for (const port of detectedPorts) {
+        if (await this.verifyAdsPowerPort(port)) {
+          console.log(`[AdsPower] ✅ 포트 ${port} API 검증 성공!`);
+          return `${baseHost}:${port}`;
         }
-      } catch (error) {
-        console.log(`[AdsPower] ⏭️  포트 ${port} 연결 실패, 다음 포트 시도...`);
+        console.log(`[AdsPower] ⏭️  포트 ${port} API 응답 없음, 다음 시도...`);
       }
+    }
+
+    // 2단계: 폴백 - 고정 포트 범위 스캔
+    const fallbackPorts = [50326, 50325, 50327];
+    console.log(`[AdsPower] 프로세스 감지 실패, 고정 포트 스캔... (${fallbackPorts.join(', ')})`);
+
+    for (const port of fallbackPorts) {
+      if (await this.verifyAdsPowerPort(port)) {
+        console.log(`[AdsPower] ✅ 포트 ${port} 연결 성공!`);
+        return `${baseHost}:${port}`;
+      }
+      console.log(`[AdsPower] ⏭️  포트 ${port} 연결 실패, 다음 포트 시도...`);
     }
 
     return null;
