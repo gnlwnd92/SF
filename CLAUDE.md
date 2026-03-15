@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Tech Stack**: Node.js 16+, Awilix (DI), Puppeteer, Google Sheets API, chalk/inquirer (CLI)
 
-**버전**: v2.40 (2026-02-28 KST) | package.json: 2.0.0
+**버전**: v2.41 (2026-03-15 KST) | package.json: 2.0.0
 
 ## Core Commands
 

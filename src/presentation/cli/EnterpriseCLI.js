@@ -257,9 +257,9 @@ class EnterpriseCLI {
     // ═══════════════════════════════════════════════════════════
     // 🔄 버전 정보 - 업그레이드 시 이 영역만 수정
     // ═══════════════════════════════════════════════════════════
-    const VERSION = 'v2.40';
-    const VERSION_DATE = '2026-02-28 KST';
-    const VERSION_DESC = 'SafeBackup v2 최적화 (동적 배치, 인라인 검증, 원자적 swap)';
+    const VERSION = 'v2.41';
+    const VERSION_DATE = '2026-03-15 KST';
+    const VERSION_DESC = '비밀번호 입력 포커스 안전장치 (좁은 뷰포트 1-column 레이아웃 대응)';
     // ═══════════════════════════════════════════════════════════
 
     console.clear();
@@ -3189,7 +3189,7 @@ class EnterpriseCLI {
    */
   async scheduledWorker() {
     try {
-      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.40'));
+      console.log(chalk.cyan.bold('\n📅 시간체크 통합 구독관리 워커 v2.41'));
       console.log(chalk.gray('─'.repeat(50)));
 
       // [v2.15] SharedConfig에서 설정값 로드

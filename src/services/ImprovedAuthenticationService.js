@@ -257,7 +257,7 @@ class ImprovedAuthenticationService {
     }
     
     this.log('❌ 모든 로그인 시도 실패', 'error');
-    return { success: false, isLoggedIn: false };
+    return { success: false, isLoggedIn: false, reason: '모든 로그인 시도 실패 (비밀번호 입력 또는 페이지 전환 불가)' };
   }
 
   /**
@@ -1532,22 +1532,77 @@ class ImprovedAuthenticationService {
         }
       }
       
-      // 비밀번호 입력 필드 클릭 (포커스)
+      // ============================================================
+      // 비밀번호 입력 (포커스 안전장치 포함)
+      // 좁은 뷰포트(1-column 레이아웃)에서 click()만으로 포커스가
+      // 안 잡히는 문제를 방지하기 위해 3단계 포커스 보장 + 입력 검증
+      // ============================================================
+
+      // 1단계: Puppeteer click으로 포커스 시도
       await passwordInput.click();
       await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
-      
+
+      // 2단계: CDP DOM.focus로 포커스 강제 설정 (좁은 뷰포트 대응)
+      try {
+        await page.evaluate(el => {
+          el.focus();
+          el.dispatchEvent(new Event('focus', { bubbles: true }));
+        }, passwordInput);
+        await new Promise(r => setTimeout(r, 100));
+      } catch (focusErr) {
+        this.log(`CDP focus 실패 (무시): ${focusErr.message}`, 'debug');
+      }
+
       // 기존 값 지우기
       await page.keyboard.down('Control');
       await page.keyboard.press('A');
       await page.keyboard.up('Control');
       await page.keyboard.press('Backspace');
       await new Promise(r => setTimeout(r, 200));
-      
+
       // 비밀번호 입력 (휴먼라이크 타이핑)
       this.log('비밀번호 입력 중...', 'debug');
       await this.humanLikeType(page, credentials.password);
       await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
-      
+
+      // 3단계: 입력 검증 - 비밀번호가 실제로 필드에 입력되었는지 확인
+      const fieldValue = await page.evaluate(el => el.value, passwordInput);
+      if (!fieldValue || fieldValue.length === 0) {
+        this.log('⚠️ 비밀번호 필드가 비어있음 - ElementHandle.type()으로 재시도', 'warning');
+
+        // 포커스 재설정 후 ElementHandle.type() 사용 (직접 요소에 타이핑)
+        await passwordInput.click({ clickCount: 3 }); // 트리플 클릭으로 전체 선택
+        await new Promise(r => setTimeout(r, 200));
+        await page.evaluate(el => {
+          el.value = '';
+          el.focus();
+        }, passwordInput);
+        await new Promise(r => setTimeout(r, 200));
+
+        // ElementHandle.type()은 요소에 직접 타이핑 (포커스 무관)
+        await passwordInput.type(credentials.password, {
+          delay: 80 + Math.random() * 40
+        });
+        await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+
+        // 재검증
+        const retryValue = await page.evaluate(el => el.value, passwordInput);
+        if (!retryValue || retryValue.length === 0) {
+          this.log('❌ 재시도 후에도 비밀번호 입력 실패 - evaluate로 직접 설정', 'error');
+          // 최종 폴백: JavaScript로 직접 값 설정
+          await page.evaluate((el, pwd) => {
+            el.value = pwd;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }, passwordInput, credentials.password);
+          await new Promise(r => setTimeout(r, 300));
+        } else {
+          this.log(`✅ 재시도 성공 - 비밀번호 입력 완료 (길이: ${retryValue.length})`, 'info');
+        }
+      } else {
+        this.log(`✅ 비밀번호 입력 확인 (길이: ${fieldValue.length})`, 'debug');
+      }
+
       // Next 버튼 클릭
       const nextButton = await this.findAndClickNextButton(page);
       if (!nextButton) {
@@ -1656,8 +1711,15 @@ class ImprovedAuthenticationService {
         this.log('✅ 로그인 상태 확인 - 성공', 'success');
         return { success: true };
       } else {
-        this.log('⚠️ 로그인 상태 확인 - 실패', 'warning');
-        return { success: false };
+        // 비밀번호 입력 후에도 로그인 페이지에 남아있는 경우
+        // → 잘못된 비밀번호이거나 좁은 뷰포트로 인한 입력 실패
+        const currentUrlAfter = page.url();
+        const pageStillOnPassword = currentUrlAfter.includes('signin/challenge/pwd');
+        const errorMsg = pageStillOnPassword
+          ? '비밀번호 입력 후에도 로그인 페이지에 남아있음 (잘못된 비밀번호 또는 입력 실패)'
+          : '로그인 상태 확인 실패';
+        this.log(`⚠️ ${errorMsg}`, 'warning');
+        return { success: false, reason: errorMsg };
       }
       
     } catch (error) {
